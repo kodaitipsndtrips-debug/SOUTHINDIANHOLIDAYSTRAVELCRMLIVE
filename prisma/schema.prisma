@@ -1,0 +1,286 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  fullName  String
+  mobile    String
+  email     String   @unique
+  username  String   @unique
+  password  String
+  role      String   // admin, sales, operations, accountant
+  status    String   // Active, Inactive
+  lastLogin DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Lead {
+  id              String      @id
+  name            String
+  mobile          String
+  email           String
+  destination     String
+  travelDate      String
+  adults          String
+  children        String
+  budget          Float?
+  notes           String      @db.Text
+  status          String      // New, Contacted, Proposal Sent, Negotiation, Won, Lost, Hot
+  priority        String      // Low, Medium, High
+  assignedTo      String?
+  source          String?     // Website, WhatsApp, Referral
+  tags            String[]
+  documents       Json?       // List of document files: { name, url, category }
+  timeline        Json        // List of history logs: { timestamp, text }
+  followUpHistory FollowUp[]
+  bookings        Booking[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model FollowUp {
+  id             String    @id @default(uuid())
+  date           String
+  time           String
+  type           String    // Call, WhatsApp, Email, Visit
+  priority       String    // Low, Medium, High
+  remarks        String    @db.Text
+  assignedTo     String
+  status         String    // Pending, Completed
+  completionDate String?
+  completionTime String?
+  leadId         String
+  lead           Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model TourPackage {
+  id            String   @id
+  name          String
+  destination   String
+  duration      String   // e.g. "3 Days / 2 Nights"
+  category      String
+  price         Float
+  hotelCategory String
+  inclusions    String   @db.Text
+  exclusions    String   @db.Text
+  status        String   // Active, Inactive
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Booking {
+  id            String         @id
+  leadId        String?
+  lead          Lead?          @relation(fields: [leadId], references: [id])
+  customerId    String
+  customerName  String
+  customerMobile String
+  customerEmail String
+  destination   String
+  travelDate    String
+  adults        Int
+  children      Int
+  packagePrice  Float
+  hotelDetails  String         @db.Text
+  driverDetails String?        @db.Text
+  status        String         // Confirmed, Pending, Cancelled
+  timeline      Json           // List of events: { timestamp, text }
+  documents     Json?          // List of documents: { name, url, category }
+  vouchers      HotelVoucher[]
+  itineraries   Itinerary[]
+  paymentLedger PaymentLedger?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model HotelVoucher {
+  id                 String   @id
+  bookingId          String
+  booking            Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerId         String
+  guestName          String
+  guestMobile        String
+  guestEmail         String
+  hotelName          String
+  hotelAddress       String   @db.Text
+  hotelPhone         String
+  hotelEmail         String
+  hotelContactPerson String
+  destination        String
+  checkInDate        String
+  checkOutDate       String
+  numNights          Int
+  numRooms           Int
+  roomType           String
+  mealPlan           String
+  numAdults          Int
+  numChildren        Int
+  numInfants         Int
+  confirmationNumber String
+  bookingStatus      String   // Pending, Confirmed, Cancelled
+  bookingDate        String
+  voucherDate        String
+  supplierName       String
+  supplierContact    String
+  totalAmount        Float
+  advancePaid        Float
+  balanceAmount      Float
+  paymentStatus      String   // Paid, Partially Paid, Unpaid
+  specialRequests    String?  @db.Text
+  billingInstructions String? @db.Text
+  remarks            String?  @db.Text
+  internalNotes      String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Itinerary {
+  id            String   @id
+  bookingId     String
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerName  String
+  bookingNumber String
+  destination   String
+  travelDate    String
+  days          Json     // Day-by-day itinerary: Array of ItineraryDay
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model PaymentLedger {
+  id            String    @id
+  bookingId     String    @unique
+  booking       Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerName  String
+  totalAmount   Float
+  advancePaid   Float
+  balanceAmount Float
+  status        String    // Paid, Partially Paid, Unpaid
+  installments  Json      // List of installments: Array of PaymentInstallment
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  description String
+  amount      Float
+  category    String
+  date        String
+  approvedBy  String
+  receiptUrl  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Hotel {
+  id             String   @id @default(uuid())
+  name           String
+  destination    String
+  rating         String
+  contactPerson  String
+  contactPhone   String
+  roomType       String
+  contractRate   Float
+  availableRooms Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Driver {
+  id          String   @id @default(uuid())
+  name        String
+  mobile      String
+  vehicleType String
+  vehicleNo   String
+  status      String   // Available, On Trip, Maintenance
+  rating      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Supplier {
+  id           String   @id @default(uuid())
+  name         String
+  type         String   // Transport, Hotel, Activities, Other
+  contactPerson String
+  contactPhone String
+  email        String
+  rating       String
+  balanceDue   Float
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Settings {
+  id              Int      @id @default(1)
+  companyName     String
+  gstNumber       String
+  address         String   @db.Text
+  phone           String
+  email           String
+  bankName        String
+  bankAccount     String
+  bankIfsc        String
+  upiId           String
+  website         String
+  logo            String
+  quotationPrefix String
+  voucherPrefix   String
+  invoicePrefix   String
+  taxRate         Float
+  updatedAt       DateTime @updatedAt
+}
+
+model Product {
+  id        String   @id @default(uuid())
+  name      String
+  price     Float
+  gst       Float
+  hsn       String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  timestamp String
+  username  String
+  action    String
+  createdAt DateTime @default(now())
+}
+
+model WhatsappConversation {
+  id            String            @id @default(uuid())
+  customerName  String
+  mobile        String            @unique
+  unreadCount   Int               @default(0)
+  assignedTo    String?           // username of assigned Sales Executive
+  lastMessage   String?           @db.Text
+  lastTimestamp DateTime          @default(now())
+  messages      WhatsappMessage[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model WhatsappMessage {
+  id             String               @id @default(uuid())
+  conversationId String
+  conversation   WhatsappConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         String               // "customer" or "agent"
+  senderName     String?              // e.g. "Amit Patel" or "Admin"
+  text           String               @db.Text
+  attachmentUrl  String?              @db.Text
+  attachmentType String?              // e.g. "pdf", "image", "document"
+  timestamp      DateTime             @default(now())
+}
+
