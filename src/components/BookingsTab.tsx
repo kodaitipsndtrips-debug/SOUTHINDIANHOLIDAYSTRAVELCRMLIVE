@@ -116,10 +116,10 @@ export default function BookingsTab({
   const filteredBookings = safeBookings.filter(b => {
     const term = search.toLowerCase();
     const matchesSearch =
-      b.customerName.toLowerCase().includes(term) ||
-      b.customerMobile.includes(term) ||
-      b.id.toLowerCase().includes(term) ||
-      b.destination.toLowerCase().includes(term);
+      (b.customerName || "").toLowerCase().includes(term) ||
+      (b.customerMobile || "").includes(term) ||
+      (b.id || "").toLowerCase().includes(term) ||
+      (b.destination || "").toLowerCase().includes(term);
 
     const matchesDest = filterDest === "all" || b.destination === filterDest;
     const matchesStatus = filterStatus === "all" || b.status === filterStatus;

@@ -102,6 +102,7 @@ export default function App() {
 
   // Inter-tab helper state
   const [selectedPkgFromLibrary, setSelectedPkgFromLibrary] = useState<TourPackage | null>(null);
+  const [selectedLeadForQuotation, setSelectedLeadForQuotation] = useState<Lead | null>(null);
 
   // Auto-login or check cached session
   useEffect(() => {
@@ -776,6 +777,13 @@ export default function App() {
               setPreselectedWhatsAppMobile(mobile);
               setCurrentTab("whatsapp");
             }}
+            setCurrentTab={setCurrentTab}
+            onAddBooking={handleAddBooking}
+            onAddItinerary={handleAddItinerary}
+            onSelectLeadForQuotation={(lead) => {
+              setSelectedLeadForQuotation(lead);
+              setCurrentTab("quotations");
+            }}
           />
         );
       case "followups":
@@ -807,8 +815,11 @@ export default function App() {
           <QuotationsTab
             packages={packages}
             leads={leads}
+            itineraries={itineraries}
             selectedPkgFromLibrary={selectedPkgFromLibrary}
             clearSelectedPkg={() => setSelectedPkgFromLibrary(null)}
+            selectedLeadForQuotation={selectedLeadForQuotation}
+            clearSelectedLeadForQuotation={() => setSelectedLeadForQuotation(null)}
             companySettings={settings}
           />
         );

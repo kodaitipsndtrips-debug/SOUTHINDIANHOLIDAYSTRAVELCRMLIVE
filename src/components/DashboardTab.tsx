@@ -64,15 +64,35 @@ export default function DashboardTab({
   // Today's Follow-ups count
   const todayStr = new Date().toISOString().split("T")[0];
   let todayFollowups = 0;
-  safeLeads.forEach(l => {
-    if (Array.isArray(l.followUpHistory)) {
-      l.followUpHistory.forEach(fu => {
-        if (fu.status === "Pending" && fu.date === todayStr) {
-          todayFollowups++;
-        }
-      });
-    }
-  });
+  let missedFollowups = 0;
+  let upcomingFollowups = 0;
+  let completedToday = 0;
+
+  if (Array.isArray(safeLeads)) {
+    safeLeads.forEach(l => {
+      if (l && Array.isArray(l.followUpHistory)) {
+        l.followUpHistory.forEach(fu => {
+          if (!fu) return;
+          const isPending = fu.status === "Pending" || !fu.status;
+          const isCompleted = fu.status === "Completed";
+          
+          if (isPending) {
+            if (fu.date === todayStr) {
+              todayFollowups++;
+            } else if (fu.date < todayStr) {
+              missedFollowups++;
+            } else if (fu.date > todayStr) {
+              upcomingFollowups++;
+            }
+          } else if (isCompleted) {
+            if (fu.completionDate === todayStr || fu.date === todayStr) {
+              completedToday++;
+            }
+          }
+        });
+      }
+    });
+  }
 
   // Upcoming tours
   const upcomingTours = safeBookings.filter(b => {
@@ -236,6 +256,55 @@ export default function DashboardTab({
           </div>
           <div className="p-3.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl group-hover:scale-110 transition-transform">
             <Lucide.PhoneCall className="w-5 h-5" />
+          </div>
+        </div>
+      </div>
+
+      {/* Follow-up Dashboard Pipeline widgets */}
+      <div className="bg-slate-900/30 border border-slate-800/50 p-4 rounded-2xl space-y-3 shadow-inner">
+        <div className="flex items-center gap-2 border-b border-slate-800/60 pb-2">
+          <Lucide.Clock className="w-4 h-4 text-indigo-400" />
+          <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400">Follow-up Operations Metrics</h4>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-slate-950/40 p-3.5 border border-slate-850/85 rounded-xl flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Today's Active</p>
+              <p className="text-xl font-bold text-amber-400 font-mono mt-0.5">{todayFollowups}</p>
+            </div>
+            <div className="p-2 bg-amber-500/10 text-amber-400 border border-amber-500/10 rounded-lg">
+              <Lucide.PhoneCall className="w-4 h-4" />
+            </div>
+          </div>
+
+          <div className="bg-slate-950/40 p-3.5 border border-slate-850/85 rounded-xl flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono">Missed / Overdue</p>
+              <p className="text-xl font-bold text-rose-400 font-mono mt-0.5">{missedFollowups}</p>
+            </div>
+            <div className="p-2 bg-rose-500/10 text-rose-400 border border-rose-500/10 rounded-lg">
+              <Lucide.AlertTriangle className="w-4 h-4" />
+            </div>
+          </div>
+
+          <div className="bg-slate-950/40 p-3.5 border border-slate-850/85 rounded-xl flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Upcoming Scheduled</p>
+              <p className="text-xl font-bold text-indigo-400 font-mono mt-0.5">{upcomingFollowups}</p>
+            </div>
+            <div className="p-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/10 rounded-lg">
+              <Lucide.CalendarDays className="w-4 h-4" />
+            </div>
+          </div>
+
+          <div className="bg-slate-950/40 p-3.5 border border-slate-850/85 rounded-xl flex items-center justify-between">
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Completed Today</p>
+              <p className="text-xl font-bold text-emerald-400 font-mono mt-0.5">{completedToday}</p>
+            </div>
+            <div className="p-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/10 rounded-lg">
+              <Lucide.CheckCircle className="w-4 h-4" />
+            </div>
           </div>
         </div>
       </div>

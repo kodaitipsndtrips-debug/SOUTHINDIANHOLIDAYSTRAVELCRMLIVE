@@ -513,7 +513,7 @@ export default function VouchersTab({
 
       {/* Grid listing of generated vouchers */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 no-print">
-        {safeVouchers.filter(v => v.guestName.toLowerCase().includes(search.toLowerCase()) || v.hotelName.toLowerCase().includes(search.toLowerCase()) || v.id.toLowerCase().includes(search.toLowerCase())).map(v => (
+        {safeVouchers.filter(v => (v.guestName || "").toLowerCase().includes(search.toLowerCase()) || (v.hotelName || "").toLowerCase().includes(search.toLowerCase()) || (v.id || "").toLowerCase().includes(search.toLowerCase())).map(v => (
           <div key={v.id} className="bg-slate-900 border border-slate-850 hover:border-slate-800 p-5 rounded-2xl flex flex-col justify-between gap-4 transition-all hover:shadow-lg animate-fadeIn">
             <div className="space-y-3">
               <div className="flex justify-between items-start">

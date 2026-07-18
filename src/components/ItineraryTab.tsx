@@ -720,7 +720,7 @@ export default function ItineraryTab({
     let cleanMobile = "919443312345"; // fallback
     
     // Lookup guest phone
-    const matchingBooking = safeBookings.find(b => b.customerName.toLowerCase() === itn.customerName.toLowerCase());
+    const matchingBooking = safeBookings.find(b => (b.customerName || "").toLowerCase() === (itn.customerName || "").toLowerCase());
     if (matchingBooking) {
       cleanMobile = matchingBooking.customerMobile.replace(/\D/g, "");
       if (cleanMobile.length === 10) {
@@ -743,7 +743,7 @@ export default function ItineraryTab({
   // Filter list
   const filteredItineraries = safeItineraries.filter(itn => {
     const term = search.toLowerCase();
-    return itn.customerName.toLowerCase().includes(term) || itn.destination.toLowerCase().includes(term);
+    return (itn.customerName || "").toLowerCase().includes(term) || (itn.destination || "").toLowerCase().includes(term);
   });
 
   // Assets available for current destination selection

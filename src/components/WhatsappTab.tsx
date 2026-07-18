@@ -593,7 +593,7 @@ export default function WhatsappTab({
 
   useEffect(() => {
     setSelectedRecordId("");
-    const matchedTpls = safeTemplates.filter(t => t.category.toLowerCase() === selectedCategory.toLowerCase());
+    const matchedTpls = safeTemplates.filter(t => (t.category || "").toLowerCase() === (selectedCategory || "").toLowerCase());
     if (matchedTpls.length > 0) {
       setSelectedTemplateId(matchedTpls[0].id);
     } else {
@@ -675,11 +675,11 @@ export default function WhatsappTab({
   // Filtering lists
   const filteredConversations = safeConversations.filter(c => {
     const term = searchQuery.toLowerCase();
-    return c.customerName.toLowerCase().includes(term) || c.mobile.includes(term);
+    return (c.customerName || "").toLowerCase().includes(term) || (c.mobile || "").includes(term);
   });
 
   const filteredLogs = safeLogs.filter(l => {
-    const searchString = `${l.customerName} ${l.mobile} ${l.templateName} ${l.messageText}`.toLowerCase();
+    const searchString = `${l.customerName || ""} ${l.mobile || ""} ${l.templateName || ""} ${l.messageText || ""}`.toLowerCase();
     return searchString.includes(logSearch.toLowerCase());
   });
 
@@ -1166,7 +1166,7 @@ export default function WhatsappTab({
                 >
                   <option value="">-- Select Template --</option>
                   {safeTemplates
-                    .filter(t => t.category.toLowerCase() === selectedCategory.toLowerCase())
+                    .filter(t => (t.category || "").toLowerCase() === (selectedCategory || "").toLowerCase())
                     .map(tpl => (
                       <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
                     ))}

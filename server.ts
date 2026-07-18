@@ -397,7 +397,8 @@ const INITIAL_DB = {
       text: "Thank you for the prompt update! Vouchers received.",
       timestamp: "2026-07-15T09:30:00.000Z"
     }
-  ]
+  ],
+  quotations: []
 };
 
 // Database state accessor
@@ -577,6 +578,188 @@ app.delete("/api/leads/:id", (req: Request, res: Response) => {
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Lead not found" });
+  }
+});
+
+// Direct Follow-ups Global REST APIs
+app.get("/api/followups", (req: Request, res: Response) => {
+  const { filter, staff, status } = req.query;
+  const todayStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowStr = tomorrowDate.toISOString().split("T")[0];
+
+  let list: any[] = [];
+  db.leads.forEach((lead: any) => {
+    const safeHistory = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+    safeHistory.forEach((fu: any) => {
+      list.push({
+        ...fu,
+        leadId: lead.id,
+        leadName: lead.name,
+        leadMobile: lead.mobile,
+        leadEmail: lead.email,
+        notes: fu.notes || fu.remarks || "",
+        staff: fu.staff || fu.assignedTo || "",
+        remarks: fu.remarks || fu.notes || "",
+        assignedTo: fu.assignedTo || fu.staff || ""
+      });
+    });
+  });
+
+  if (filter === "today") {
+    list = list.filter(fu => fu.date === todayStr);
+  } else if (filter === "tomorrow") {
+    list = list.filter(fu => fu.date === tomorrowStr);
+  } else if (filter === "overdue") {
+    list = list.filter(fu => fu.status === "Pending" && fu.date < todayStr);
+  }
+
+  if (staff && staff !== "all") {
+    list = list.filter(fu => (fu.staff === staff || fu.assignedTo === staff));
+  }
+
+  if (status && status !== "all") {
+    list = list.filter(fu => fu.status === status);
+  }
+
+  list.sort((a, b) => {
+    const dateA = `${a.date}T${a.time || "00:00"}`;
+    const dateB = `${b.date}T${b.time || "00:00"}`;
+    return dateB.localeCompare(dateA);
+  });
+
+  res.json(list);
+});
+
+app.post("/api/followups", (req: Request, res: Response) => {
+  const { leadId, date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
+
+  if (!date || !time || !notes) {
+    return res.status(400).json({ error: "Date, time, and notes are required" });
+  }
+
+  const lead = db.leads.find((l: any) => l.id === leadId);
+  if (!lead) return res.status(404).json({ error: "Lead not found" });
+
+  const id = `FU-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const fu = {
+    id,
+    date,
+    time,
+    type,
+    priority: priority || "Medium",
+    status: status || "Pending",
+    notes,
+    remarks: notes,
+    staff: staff || "admin",
+    assignedTo: staff || "admin",
+    nextFollowUp: nextFollowUp || ""
+  };
+
+  lead.followUpHistory = lead.followUpHistory || [];
+  lead.followUpHistory.unshift(fu);
+
+  // Auto update lead status to Follow-up
+  lead.status = "Follow-up";
+
+  lead.timeline = lead.timeline || [];
+  lead.timeline.unshift({
+    timestamp: new Date().toLocaleDateString("en-IN"),
+    text: `Created follow-up [${type}] scheduled by ${staff || "admin"}. Notes: ${notes}`
+  });
+
+  writeDb();
+  logAction("system", `Scheduled follow-up for lead ${lead.name}`);
+  res.status(201).json(fu);
+});
+
+app.put("/api/followups/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
+
+  let foundFu: any = null;
+
+  for (const lead of db.leads) {
+    const safeHistory = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+    const idx = safeHistory.findIndex((f: any) => f.id === id);
+    if (idx !== -1) {
+      foundFu = safeHistory[idx];
+      
+      const updatedFu = {
+        ...foundFu,
+        date: date !== undefined ? date : foundFu.date,
+        time: time !== undefined ? time : foundFu.time,
+        type: type !== undefined ? type : foundFu.type,
+        priority: priority !== undefined ? priority : foundFu.priority,
+        status: status !== undefined ? status : foundFu.status,
+        notes: notes !== undefined ? notes : (foundFu.notes || foundFu.remarks),
+        remarks: notes !== undefined ? notes : (foundFu.remarks || foundFu.notes),
+        staff: staff !== undefined ? staff : (foundFu.staff || foundFu.assignedTo),
+        assignedTo: staff !== undefined ? staff : (foundFu.assignedTo || foundFu.staff),
+        nextFollowUp: nextFollowUp !== undefined ? nextFollowUp : foundFu.nextFollowUp
+      };
+
+      if (status === "Completed" && foundFu.status !== "Completed") {
+        updatedFu.completionDate = new Date().toISOString().split("T")[0];
+        updatedFu.completionTime = new Date().toTimeString().split(" ")[0].substring(0, 5);
+      }
+
+      lead.followUpHistory[idx] = updatedFu;
+      
+      // Also update lead status automatically on save/update of followup if appropriate
+      if (status === "Completed") {
+        lead.status = "Contacted"; // transition status on completion
+      } else {
+        lead.status = "Follow-up";
+      }
+
+      lead.timeline = lead.timeline || [];
+      lead.timeline.unshift({
+        timestamp: new Date().toLocaleDateString("en-IN"),
+        text: `Updated follow-up status to ${status || foundFu.status}. Notes: ${notes || ""}`
+      });
+
+      writeDb();
+      logAction("system", `Updated follow-up ${id} on lead ${lead.name}`);
+      foundFu = updatedFu;
+      break;
+    }
+  }
+
+  if (foundFu) {
+    res.json(foundFu);
+  } else {
+    res.status(404).json({ error: "Follow-up not found" });
+  }
+});
+
+app.delete("/api/followups/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  let deleted = false;
+
+  for (const lead of db.leads) {
+    const safeHistory = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+    const exists = safeHistory.some((f: any) => f.id === id);
+    if (exists) {
+      lead.followUpHistory = safeHistory.filter((f: any) => f.id !== id);
+      lead.timeline = lead.timeline || [];
+      lead.timeline.unshift({
+        timestamp: new Date().toLocaleDateString("en-IN"),
+        text: `Deleted scheduling follow-up item ${id}`
+      });
+      writeDb();
+      logAction("system", `Deleted follow-up ${id} from lead ${lead.name}`);
+      deleted = true;
+      break;
+    }
+  }
+
+  if (deleted) {
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Follow-up not found" });
   }
 });
 
@@ -765,6 +948,157 @@ app.delete("/api/vouchers/:id", (req: Request, res: Response) => {
   db.vouchers = db.vouchers.filter(v => v.id !== id);
   writeDb();
   res.json({ success: true });
+});
+
+// Quotations CRUD
+app.get("/api/quotations", (req: Request, res: Response) => {
+  res.json(db.quotations || []);
+});
+
+app.post("/api/quotations", (req: Request, res: Response) => {
+  try {
+    const quotation = req.body;
+    quotation.id = quotation.id || `QT-${Math.floor(10000 + Math.random() * 90000)}`;
+    const prefix = db.settings?.quotationPrefix || "SIH-QT-";
+    const count = (db.quotations || []).length;
+    quotation.quotationNumber = quotation.quotationNumber || `${prefix}${1000 + count + 1}`;
+    quotation.createdAt = quotation.createdAt || new Date().toISOString();
+    quotation.updatedAt = quotation.updatedAt || new Date().toISOString();
+    quotation.status = quotation.status || "Draft";
+    
+    db.quotations = db.quotations || [];
+    db.quotations.unshift(quotation);
+    writeDb();
+    
+    logAction("operations", `Created quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+    res.status(201).json(quotation);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to create quotation" });
+  }
+});
+
+app.put("/api/quotations/:id", (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    db.quotations = db.quotations || [];
+    const idx = db.quotations.findIndex((q: any) => q.id === id);
+    if (idx !== -1) {
+      db.quotations[idx] = { 
+        ...db.quotations[idx], 
+        ...req.body, 
+        updatedAt: new Date().toISOString() 
+      };
+      writeDb();
+      logAction("operations", `Updated quotation variables on ${db.quotations[idx].quotationNumber}`);
+      res.json(db.quotations[idx]);
+    } else {
+      res.status(404).json({ error: "Quotation not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to update quotation" });
+  }
+});
+
+app.delete("/api/quotations/:id", (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    db.quotations = db.quotations || [];
+    const quotation = db.quotations.find((q: any) => q.id === id);
+    if (quotation) {
+      db.quotations = db.quotations.filter((q: any) => q.id !== id);
+      writeDb();
+      logAction("operations", `Deleted quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "Quotation not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to delete quotation" });
+  }
+});
+
+// Save PDF for Quotation
+app.post("/api/quotations/:id/pdf", upload.single("file"), (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    db.quotations = db.quotations || [];
+    const idx = db.quotations.findIndex((q: any) => q.id === id);
+    if (idx !== -1) {
+      if (req.file) {
+        const fileUrl = `/uploads/${req.file.filename}`;
+        db.quotations[idx].pdfPath = fileUrl;
+        db.quotations[idx].updatedAt = new Date().toISOString();
+        writeDb();
+        logAction("operations", `Uploaded PDF file for quotation ${db.quotations[idx].quotationNumber}`);
+        res.json({ success: true, pdfPath: fileUrl });
+      } else {
+        res.status(400).json({ error: "No PDF file provided" });
+      }
+    } else {
+      res.status(404).json({ error: "Quotation not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to upload PDF" });
+  }
+});
+
+// Share Quotation via WhatsApp
+app.post("/api/quotations/:id/share-whatsapp", (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    db.quotations = db.quotations || [];
+    const idx = db.quotations.findIndex((q: any) => q.id === id);
+    if (idx !== -1) {
+      const q = db.quotations[idx];
+      const customerMobile = q.customerPhone || "";
+      const cleanPhone = customerMobile.replace(/\D/g, "");
+      
+      const protocol = req.protocol;
+      const host = req.get("host");
+      const pdfUrl = q.pdfPath ? `${protocol}://${host}${q.pdfPath}` : `${protocol}://${host}/uploads/dummy-pdf.pdf`;
+      
+      const message = `Dear ${q.customerName},\n\nThank you for choosing South Indian Holidays.\n\nPlease find your travel quotation attached.\n\nLink to your travel quotation: ${pdfUrl}\n\nRegards,\nSouth Indian Holidays`;
+      
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(message)}`;
+      
+      q.status = "Sent";
+      q.updatedAt = new Date().toISOString();
+      writeDb();
+      
+      logAction("operations", `Shared quotation ${q.quotationNumber} with ${q.customerName} via WhatsApp`);
+      
+      res.json({ success: true, whatsappUrl, message });
+    } else {
+      res.status(404).json({ error: "Quotation not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to share via WhatsApp" });
+  }
+});
+
+// Send Quotation via Email
+app.post("/api/quotations/:id/send-email", (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    db.quotations = db.quotations || [];
+    const idx = db.quotations.findIndex((q: any) => q.id === id);
+    if (idx !== -1) {
+      const q = db.quotations[idx];
+      const email = req.body.email || q.customerEmail || "";
+      
+      q.status = "Sent";
+      q.updatedAt = new Date().toISOString();
+      writeDb();
+      
+      logAction("operations", `Emailed quotation ${q.quotationNumber} with PDF attachment to ${email}`);
+      
+      res.json({ success: true, message: `Email sent successfully to ${email}` });
+    } else {
+      res.status(404).json({ error: "Quotation not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to send email" });
+  }
 });
 
 // Itineraries CRUD

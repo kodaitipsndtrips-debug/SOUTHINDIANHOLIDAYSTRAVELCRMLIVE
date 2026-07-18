@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import * as Lucide from "lucide-react";
 import axios from "axios";
-import { Lead, FollowUp, User } from "../types";
+import { Lead, FollowUp, User, Booking, Itinerary } from "../types";
 import { parseWhatsAppChat, getLocalDateString, formatFriendlyDate } from "../utils";
 
 interface LeadsTabProps {
@@ -12,6 +12,10 @@ interface LeadsTabProps {
   users: User[];
   currentUsername: string;
   onOpenWhatsAppChat?: (mobile: string) => void;
+  setCurrentTab?: (tab: string) => void;
+  onAddBooking?: (bk: Partial<Booking>) => void;
+  onAddItinerary?: (itn: any) => void;
+  onSelectLeadForQuotation?: (lead: Lead) => void;
 }
 
 export default function LeadsTab({
@@ -21,7 +25,11 @@ export default function LeadsTab({
   onDeleteLead,
   users = [],
   currentUsername,
-  onOpenWhatsAppChat
+  onOpenWhatsAppChat,
+  setCurrentTab,
+  onAddBooking,
+  onAddItinerary,
+  onSelectLeadForQuotation
 }: LeadsTabProps) {
   const safeLeads = Array.isArray(leads) ? leads : [];
   const safeUsers = Array.isArray(users) ? users : [];
@@ -44,6 +52,23 @@ export default function LeadsTab({
   const [viewingLead, setViewingLead] = useState<Lead | null>(null);
   const [whatsappHistory, setWhatsappHistory] = useState<any[]>([]);
   const [whatsappConvId, setWhatsappConvId] = useState<string>("");
+
+  // Rebuild/Stabilize Follow-up states
+  const [showAddFollowupModal, setShowAddFollowupModal] = useState<Lead | null>(null);
+  const [followupForm, setFollowupForm] = useState({
+    date: getLocalDateString(),
+    time: "10:00",
+    type: "Phone",
+    priority: "Medium" as 'Low' | 'Medium' | 'High',
+    status: "Pending" as 'Pending' | 'Completed',
+    notes: "",
+    nextFollowUp: "",
+    staff: currentUsername || "admin"
+  });
+
+  // Action Menu state
+  const [activeActionMenuLeadId, setActiveActionMenuLeadId] = useState<string | null>(null);
+  const [quickAssignLeadId, setQuickAssignLeadId] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (!viewingLead) {
@@ -363,10 +388,10 @@ export default function LeadsTab({
   const filteredLeads = safeLeads.filter(l => {
     const term = search.toLowerCase();
     const matchesSearch =
-      l.name.toLowerCase().includes(term) ||
-      l.mobile.includes(term) ||
-      l.id.toLowerCase().includes(term) ||
-      l.destination.toLowerCase().includes(term);
+      (l.name || "").toLowerCase().includes(term) ||
+      (l.mobile || "").includes(term) ||
+      (l.id || "").toLowerCase().includes(term) ||
+      (l.destination || "").toLowerCase().includes(term);
 
     const matchesStatus = filterStatus === "all" || l.status === filterStatus;
     const matchesPriority = filterPriority === "all" || l.priority === filterPriority;
@@ -768,51 +793,259 @@ export default function LeadsTab({
               </div>
 
               {/* Card Bottom / Actions */}
-              <div className="flex items-center justify-between border-t border-slate-850 pt-3">
-                <span className={`text-[8px] uppercase font-black px-1.5 py-0.5 rounded ${priorityColors[lead.priority]}`}>
-                  {lead.priority} Priority
-                </span>
-                <div className="flex gap-1.5">
-                  <button
-                    onClick={() => {
-                      let cleanMobile = lead.mobile.replace(/\D/g, "");
-                      if (cleanMobile.length === 10) {
-                        cleanMobile = "91" + cleanMobile;
-                      }
-                      const welcomeMsg = `Namaste ${lead.name},\n\nGreetings from South Indian Holidays! 🌴🎒\n\nThank you for contacting us. We have received your query for a tour to ${lead.destination.toUpperCase()} around ${formatFriendlyDate(lead.travelDate)}.\n\nOur tour planning experts are compiling a customized, premium itinerary for you. We will share the details very shortly!\n\nWarm Regards,\nSouth Indian Holidays`;
-                      window.open(`https://wa.me/${cleanMobile}?text=${encodeURIComponent(welcomeMsg)}`, "_blank", "noopener,noreferrer");
-                    }}
-                    className="p-1.5 text-emerald-400 hover:text-emerald-300 bg-emerald-950/20 hover:bg-emerald-950/40 border border-emerald-900/30 rounded-lg cursor-pointer"
-                    title="Send Welcome Greeting via WhatsApp"
-                  >
-                    <Lucide.MessageSquare className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setViewingLead(lead)}
-                    className="p-1.5 text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-850 rounded-lg border border-slate-850 cursor-pointer"
-                    title="Profile & Timeline"
-                  >
-                    <Lucide.Eye className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => openEditForm(lead)}
-                    className="p-1.5 text-indigo-400 hover:text-indigo-300 bg-slate-950 hover:bg-slate-850 rounded-lg border border-slate-850 cursor-pointer"
-                    title="Edit Prospect"
-                  >
-                    <Lucide.Edit className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm("Are you sure you want to delete this prospect lead file?")) {
-                        onDeleteLead(lead.id);
-                      }
-                    }}
-                    className="p-1.5 text-rose-400 hover:text-rose-300 bg-slate-950 hover:bg-slate-850 rounded-lg border border-slate-850 cursor-pointer"
-                    title="Delete Prospect"
-                  >
-                    <Lucide.Trash className="w-3.5 h-3.5" />
-                  </button>
+              <div className="flex flex-col gap-2 border-t border-slate-850 pt-3 relative">
+                <div className="flex items-center justify-between">
+                  <span className={`text-[8px] uppercase font-black px-1.5 py-0.5 rounded ${priorityColors[lead.priority]}`}>
+                    {lead.priority} Priority
+                  </span>
+                  
+                  {/* Common Quick Actions Row */}
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setViewingLead(lead)}
+                      className="p-1.5 text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-850 rounded-lg border border-slate-850 cursor-pointer"
+                      title="View Lead Timeline"
+                    >
+                      <Lucide.Eye className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => openEditForm(lead)}
+                      className="p-1.5 text-indigo-400 hover:text-indigo-300 bg-slate-950 hover:bg-slate-850 rounded-lg border border-slate-850 cursor-pointer"
+                      title="Edit Prospect"
+                    >
+                      <Lucide.Edit className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setShowAddFollowupModal(lead)}
+                      className="p-1.5 text-amber-400 hover:text-amber-300 bg-amber-950/20 hover:bg-amber-950/40 border border-amber-900/30 rounded-lg cursor-pointer"
+                      title="Add Follow-up Entry"
+                    >
+                      <Lucide.CalendarClock className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveActionMenuLeadId(activeActionMenuLeadId === lead.id ? null : lead.id);
+                        setQuickAssignLeadId(null);
+                      }}
+                      className="p-1.5 text-slate-300 hover:text-indigo-400 bg-slate-950 hover:bg-indigo-950/20 rounded-lg border border-slate-850 cursor-pointer flex items-center gap-1 text-[10px] font-black uppercase tracking-wider"
+                      title="More Actions"
+                    >
+                      <Lucide.SlidersHorizontal className="w-3.5 h-3.5" />
+                      <span>Ops Menu</span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* All 12 Actions Dropdown Overlay */}
+                {activeActionMenuLeadId === lead.id && (
+                  <div className="absolute right-0 bottom-10 z-20 w-64 bg-slate-900 border border-slate-750 p-3 rounded-2xl shadow-2xl space-y-1 text-[11px] animate-fadeIn">
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-1.5 mb-1.5">
+                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Lead Actions Deck (12)</span>
+                      <button onClick={() => setActiveActionMenuLeadId(null)} className="text-slate-500 hover:text-white">
+                        <Lucide.X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 gap-0.5 max-h-72 overflow-y-auto pr-1">
+                      {/* 1. View */}
+                      <button
+                        onClick={() => { setViewingLead(lead); setActiveActionMenuLeadId(null); }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.Eye className="w-3.5 h-3.5 text-sky-400" />
+                        <span>1. View Lead Record</span>
+                      </button>
+
+                      {/* 2. Edit */}
+                      <button
+                        onClick={() => { openEditForm(lead); setActiveActionMenuLeadId(null); }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.Edit className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>2. Edit Details</span>
+                      </button>
+
+                      {/* 3. Delete */}
+                      <button
+                        onClick={() => {
+                          if (confirm(`Are you sure you want to permanently delete lead: ${lead.name}?`)) {
+                            onDeleteLead(lead.id);
+                          }
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-rose-950/30 rounded-lg text-rose-400 hover:text-rose-300 flex items-center gap-2"
+                      >
+                        <Lucide.Trash2 className="w-3.5 h-3.5" />
+                        <span>3. Delete Prospect</span>
+                      </button>
+
+                      {/* 4. Assign User */}
+                      <div className="border border-slate-800/40 rounded-lg p-1 bg-slate-950/40 my-1">
+                        <div className="px-2 py-1 text-[8px] font-bold text-slate-500 uppercase tracking-wider">4. Assign Staff User</div>
+                        <div className="grid grid-cols-2 gap-1 mt-1">
+                          {safeUsers.map(user => (
+                            <button
+                              key={user.username}
+                              onClick={() => {
+                                onUpdateLead(lead.id, { assignedTo: user.username });
+                                alert(`Successfully assigned lead "${lead.name}" to ${user.username}`);
+                                setQuickAssignLeadId(null);
+                                setActiveActionMenuLeadId(null);
+                              }}
+                              className={`text-[9px] text-left px-2 py-1 rounded transition-all font-semibold ${lead.assignedTo === user.username ? "bg-teal-500/10 text-teal-400 border border-teal-500/20" : "bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white"}`}
+                            >
+                              {user.username}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* 5. Convert to Booking */}
+                      <button
+                        onClick={() => {
+                          if (onAddBooking) {
+                            const newBk = {
+                              id: `BK-${Math.floor(10000 + Math.random() * 90000)}`,
+                              leadId: lead.id,
+                              customerId: lead.id,
+                              customerName: lead.name,
+                              customerMobile: lead.mobile,
+                              customerEmail: lead.email || "",
+                              destination: lead.destination,
+                              travelDate: lead.travelDate,
+                              adults: Number(lead.adults) || 2,
+                              children: Number(lead.children) || 0,
+                              packagePrice: lead.budget || 15000,
+                              hotelDetails: "Double Bedroom Premium Suite",
+                              status: "Confirmed" as const,
+                              timeline: [{ timestamp: new Date().toLocaleDateString("en-IN"), text: "Converted from prospect lead file" }],
+                              documents: []
+                            };
+                            onAddBooking(newBk);
+                            onUpdateLead(lead.id, { status: "Won" });
+                            alert(`Lead "${lead.name}" successfully converted to Booking file ${newBk.id}!`);
+                            if (setCurrentTab) setCurrentTab("bookings");
+                          }
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-emerald-950/30 rounded-lg text-emerald-400 hover:text-emerald-300 flex items-center gap-2"
+                      >
+                        <Lucide.CheckSquare className="w-3.5 h-3.5" />
+                        <span>5. Convert to Booking</span>
+                      </button>
+
+                      {/* 6. Create Quotation */}
+                      <button
+                        onClick={() => {
+                          if (onSelectLeadForQuotation) {
+                            onSelectLeadForQuotation(lead);
+                          } else if (setCurrentTab) {
+                            setCurrentTab("quotations");
+                          }
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.FileSpreadsheet className="w-3.5 h-3.5 text-amber-400" />
+                        <span>6. Create Quotation</span>
+                      </button>
+
+                      {/* 7. Create Itinerary */}
+                      <button
+                        onClick={() => {
+                          if (onAddItinerary) {
+                            const newItn = {
+                              id: `ITN-${Math.floor(10000 + Math.random() * 90000)}`,
+                              bookingId: `BK-DUMMY-${Date.now()}`,
+                              customerName: lead.name,
+                              bookingNumber: lead.id,
+                              destination: lead.destination,
+                              travelDate: lead.travelDate,
+                              days: [
+                                {
+                                  dayNumber: 1,
+                                  date: lead.travelDate,
+                                  title: "Welcome & Check-in",
+                                  description: `Arrive at ${lead.destination}. Pick-up and transfer to hotel. Check-in and evening at leisure.`,
+                                  hotelName: "Premium Hotel Selection",
+                                  meals: ["Dinner"],
+                                  transportDetails: "Private Transfer"
+                                }
+                              ]
+                            };
+                            onAddItinerary(newItn);
+                            alert(`Created travel itinerary draft for ${lead.name}!`);
+                            if (setCurrentTab) setCurrentTab("itineraries");
+                          }
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-indigo-950/30 rounded-lg text-indigo-400 hover:text-indigo-300 flex items-center gap-2"
+                      >
+                        <Lucide.MapPin className="w-3.5 h-3.5" />
+                        <span>7. Create Itinerary</span>
+                      </button>
+
+                      {/* 8. WhatsApp */}
+                      <button
+                        onClick={() => {
+                          let cleanMobile = lead.mobile.replace(/\D/g, "");
+                          if (cleanMobile.length === 10) {
+                            cleanMobile = "91" + cleanMobile;
+                          }
+                          const welcomeMsg = `Namaste ${lead.name},\n\nGreetings from South Indian Holidays! 🌴🎒\n\nThank you for contacting us. We have received your query for a tour to ${lead.destination.toUpperCase()}.\n\nWarm Regards,\nSouth Indian Holidays`;
+                          window.open(`https://wa.me/${cleanMobile}?text=${encodeURIComponent(welcomeMsg)}`, "_blank", "noopener,noreferrer");
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>8. WhatsApp Contact</span>
+                      </button>
+
+                      {/* 9. Call */}
+                      <button
+                        onClick={() => {
+                          window.location.href = `tel:${lead.mobile}`;
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.PhoneCall className="w-3.5 h-3.5 text-green-400" />
+                        <span>9. Call Contact</span>
+                      </button>
+
+                      {/* 10. Email */}
+                      <button
+                        onClick={() => {
+                          window.location.href = `mailto:${lead.email || ""}?subject=Travel%25Update&body=Hi%20${encodeURIComponent(lead.name)},`;
+                          setActiveActionMenuLeadId(null);
+                        }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white flex items-center gap-2"
+                      >
+                        <Lucide.Mail className="w-3.5 h-3.5 text-yellow-400" />
+                        <span>10. Email Send</span>
+                      </button>
+
+                      {/* 11. Add Follow-up */}
+                      <button
+                        onClick={() => { setShowAddFollowupModal(lead); setActiveActionMenuLeadId(null); }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-amber-950/30 rounded-lg text-amber-400 hover:text-amber-300 flex items-center gap-2"
+                      >
+                        <Lucide.CalendarClock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>11. Add Follow-up Entry</span>
+                      </button>
+
+                      {/* 12. View Follow-up History */}
+                      <button
+                        onClick={() => { setViewingLead(lead); setActiveActionMenuLeadId(null); }}
+                        className="w-full text-left px-2 py-1.5 hover:bg-slate-850 rounded-lg text-indigo-400 hover:text-indigo-300 flex items-center gap-2 font-bold"
+                      >
+                        <Lucide.Clock className="w-3.5 h-3.5" />
+                        <span>12. View Follow-up History</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -1101,6 +1334,233 @@ export default function LeadsTab({
                 Close Profile
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 11. Add Follow-up Modal Popup */}
+      {showAddFollowupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-750 w-full max-w-lg rounded-2xl shadow-2xl p-6 relative overflow-hidden space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-xl">
+                  <Lucide.CalendarClock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black uppercase text-white tracking-wider">Schedule New Follow-up</h3>
+                  <p className="text-[10px] text-slate-500 font-semibold">Active prospect: {showAddFollowupModal.name} ({showAddFollowupModal.id})</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAddFollowupModal(null)}
+                className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-750 p-1.5 rounded-lg border border-slate-700/50 transition-all"
+              >
+                <Lucide.X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!followupForm.date) {
+                  alert("Follow-up date is mandatory");
+                  return;
+                }
+                if (!followupForm.time) {
+                  alert("Follow-up time is mandatory");
+                  return;
+                }
+                if (!followupForm.notes.trim()) {
+                  alert("Follow-up notes/goal is mandatory");
+                  return;
+                }
+                const d = new Date(followupForm.date);
+                if (isNaN(d.getTime())) {
+                  alert("Please choose a valid follow-up date");
+                  return;
+                }
+
+                try {
+                  const res = await axios.post("/api/followups", {
+                    leadId: showAddFollowupModal.id,
+                    date: followupForm.date,
+                    time: followupForm.time,
+                    type: followupForm.type,
+                    priority: followupForm.priority,
+                    status: followupForm.status,
+                    notes: followupForm.notes,
+                    staff: followupForm.staff,
+                    nextFollowUp: followupForm.nextFollowUp
+                  });
+
+                  // Add directly in memory
+                  const updatedHistory = [...(showAddFollowupModal.followUpHistory || [])];
+                  updatedHistory.unshift(res.data);
+
+                  const updatedTimeline = [...(showAddFollowupModal.timeline || [])];
+                  updatedTimeline.unshift({
+                    timestamp: new Date().toLocaleDateString("en-IN"),
+                    text: `Scheduled new [${followupForm.type}] follow-up. Notes: ${followupForm.notes}`
+                  });
+
+                  onUpdateLead(showAddFollowupModal.id, {
+                    followUpHistory: updatedHistory,
+                    timeline: updatedTimeline,
+                    status: "Follow-up"
+                  });
+
+                  alert(`Follow-up saved and scheduled successfully!`);
+                  setShowAddFollowupModal(null);
+                  
+                  // Reset form
+                  setFollowupForm({
+                    date: getLocalDateString(),
+                    time: "10:00",
+                    type: "Phone",
+                    priority: "Medium",
+                    status: "Pending",
+                    notes: "",
+                    nextFollowUp: "",
+                    staff: currentUsername || "admin"
+                  });
+                } catch (err: any) {
+                  console.error(err);
+                  alert("Failed to schedule follow-up: " + (err.response?.data?.error || err.message));
+                }
+              }}
+              className="space-y-4 text-xs"
+            >
+              <div className="grid grid-cols-2 gap-4">
+                {/* Followup Date */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Follow-up Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={followupForm.date}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/40 p-2.5 rounded-xl text-white focus:outline-none transition-all"
+                  />
+                </div>
+
+                {/* Followup Time */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Follow-up Time *</label>
+                  <input
+                    type="time"
+                    required
+                    value={followupForm.time}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, time: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/40 p-2.5 rounded-xl text-white focus:outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Followup Type */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Follow-up Type</label>
+                  <select
+                    value={followupForm.type}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, type: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-slate-300 focus:outline-none focus:border-amber-500/40"
+                  >
+                    <option value="Phone">Phone</option>
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Email">Email</option>
+                    <option value="Office Visit">Office Visit</option>
+                    <option value="Reminder">Reminder</option>
+                  </select>
+                </div>
+
+                {/* Priority */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Priority</label>
+                  <select
+                    value={followupForm.priority}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, priority: e.target.value as any }))}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-slate-300 focus:outline-none focus:border-amber-500/40"
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Status */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
+                  <select
+                    value={followupForm.status}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, status: e.target.value as any }))}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-slate-300 focus:outline-none focus:border-amber-500/40"
+                  >
+                    <option value="Pending">Pending</option>
+                    <option value="Completed">Completed</option>
+                  </select>
+                </div>
+
+                {/* Assigned Staff */}
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Assigned Staff</label>
+                  <select
+                    value={followupForm.staff}
+                    onChange={(e) => setFollowupForm(prev => ({ ...prev, staff: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-xl text-slate-300 focus:outline-none focus:border-amber-500/40"
+                  >
+                    {safeUsers.map(user => (
+                      <option key={user.username} value={user.username}>{user.username} ({user.role})</option>
+                    ))}
+                    {safeUsers.length === 0 && <option value="admin">admin</option>}
+                  </select>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Follow-up Notes / Goal *</label>
+                <textarea
+                  rows={3}
+                  required
+                  placeholder="e.g. Talk about the taxi rate premium for weekend tour packages"
+                  value={followupForm.notes}
+                  onChange={(e) => setFollowupForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/40 p-2.5 rounded-xl text-white focus:outline-none transition-all resize-none"
+                />
+              </div>
+
+              {/* Next Follow-up Date */}
+              <div>
+                <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Next Follow-up Date (Optional)</label>
+                <input
+                  type="date"
+                  value={followupForm.nextFollowUp}
+                  onChange={(e) => setFollowupForm(prev => ({ ...prev, nextFollowUp: e.target.value }))}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500/40 p-2.5 rounded-xl text-white focus:outline-none transition-all"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800/60 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowAddFollowupModal(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded-xl font-bold transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold transition-all flex items-center gap-1.5"
+                >
+                  <Lucide.Save className="w-4 h-4" />
+                  Save Follow-up
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

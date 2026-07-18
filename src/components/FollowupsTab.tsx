@@ -46,7 +46,7 @@ export default function FollowupsTab({ leads = [], onUpdateLead }: FollowupsTabP
 
   // Perform filtering
   const filteredFollowups = allFollowups.filter(f => {
-    const matchChannel = filterChannel === "all" || f.type.toLowerCase() === filterChannel.toLowerCase();
+    const matchChannel = filterChannel === "all" || (f.type || "").toLowerCase() === filterChannel.toLowerCase();
     const matchAssignee = filterAssignee === "all" || f.assignedTo === filterAssignee;
     const matchDate = !selectedDate || f.date === selectedDate;
     return matchChannel && matchAssignee && matchDate;
