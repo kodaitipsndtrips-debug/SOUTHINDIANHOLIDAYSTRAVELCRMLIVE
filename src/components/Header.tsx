@@ -81,28 +81,28 @@ export default function Header({
   const hasAlerts = overdueCount > 0 || todayFollowUpCount > 0 || upcomingToursCount > 0;
 
   return (
-    <header className="sticky top-0 bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 h-16 flex items-center justify-between px-6 flex-shrink-0 no-print z-30 select-none">
+    <header className="sticky top-0 bg-slate-900/80 backdrop-blur-md border-b border-slate-800/80 h-16 flex items-center justify-between gap-2 px-3 sm:px-6 flex-shrink-0 no-print z-30 select-none">
       {/* Left side: Hamburger Toggle & Breadcrumbs */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         {onToggleSidebar && (
           <button 
             onClick={onToggleSidebar}
-            className="lg:hidden p-2 -ml-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+            className="lg:hidden p-2 -ml-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shrink-0"
           >
             <Lucide.Menu className="w-5 h-5" />
           </button>
         )}
         
-        <div className="flex items-center gap-2">
-          <Lucide.Compass className="w-4 h-4 text-indigo-400" />
-          <span className="text-slate-500 text-xs font-semibold">CRM</span>
-          <Lucide.ChevronRight className="w-3 h-3 text-slate-600" />
-          <span className="text-white text-xs font-bold tracking-tight">{getTabLabel(currentTab)}</span>
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <Lucide.Compass className="w-4 h-4 text-indigo-400 shrink-0 hidden sm:inline" />
+          <span className="text-slate-500 text-xs font-semibold hidden sm:inline">CRM</span>
+          <Lucide.ChevronRight className="w-3 h-3 text-slate-600 shrink-0 hidden sm:inline" />
+          <span className="text-white text-xs font-bold tracking-tight truncate">{getTabLabel(currentTab)}</span>
         </div>
       </div>
 
       {/* Right Tools */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto no-scrollbar">
         {/* Profile Simulator for Super Admin */}
         {(user?.role === "admin" || isImpersonating) && (
           <div className="flex items-center gap-1.5">

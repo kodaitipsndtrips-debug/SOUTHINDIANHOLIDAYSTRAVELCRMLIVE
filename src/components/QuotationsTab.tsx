@@ -1207,6 +1207,7 @@ export default function QuotationsTab({
 
             {/* List of current line items */}
             <div className="border border-slate-850 rounded-xl overflow-hidden text-xs">
+             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-950/50 text-[9px] uppercase font-black tracking-wider text-slate-400">
                   <tr>
@@ -1246,6 +1247,7 @@ export default function QuotationsTab({
                   )}
                 </tbody>
               </table>
+             </div>
             </div>
 
             {/* T&C template pickers & totals */}

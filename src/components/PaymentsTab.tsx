@@ -184,6 +184,7 @@ export default function PaymentsTab({
 
           {/* Table / Grid list */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg text-xs">
+           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-slate-950/40 text-[9px] uppercase font-black tracking-wider text-slate-400 border-b border-slate-850">
                 <tr>
@@ -251,6 +252,7 @@ export default function PaymentsTab({
                 )}
               </tbody>
             </table>
+           </div>
           </div>
         </div>
 

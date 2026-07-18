@@ -979,17 +979,17 @@ export default function App() {
         />
 
         {realAdminUser && (
-          <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-2.5 flex items-center justify-between text-xs text-amber-300 select-none animate-fadeIn shrink-0">
-            <div className="flex items-center gap-2">
-              <Lucide.AlertTriangle className="w-4 h-4 text-amber-400 animate-pulse" />
-              <span>
+          <div className="bg-amber-500/10 border-b border-amber-500/20 px-3 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between text-xs text-amber-300 select-none animate-fadeIn shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Lucide.AlertTriangle className="w-4 h-4 text-amber-400 animate-pulse shrink-0" />
+              <span className="truncate sm:whitespace-normal">
                 <strong>Simulation Active:</strong> Currently simulating the exact view and capabilities of{" "}
                 <strong className="text-white">{user?.fullName} ({user?.role?.toUpperCase()})</strong>.
               </span>
             </div>
             <button
               onClick={() => handleImpersonateUser(null)}
-              className="bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold px-3 py-1 rounded-lg transition-all cursor-pointer text-[10px] uppercase tracking-wider shadow"
+              className="bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold px-3 py-1 rounded-lg transition-all cursor-pointer text-[10px] uppercase tracking-wider shadow self-start sm:self-auto shrink-0"
             >
               Exit Simulation
             </button>
@@ -997,7 +997,7 @@ export default function App() {
         )}
 
         {/* Content canvas with custom scrollbar */}
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6 space-y-4 sm:space-y-6">
           {renderActiveTabContent()}
         </main>
       </div>
