@@ -769,24 +769,28 @@ app.delete("/api/vouchers/:id", (req: Request, res: Response) => {
 
 // Itineraries CRUD
 app.get("/api/itineraries", (req: Request, res: Response) => {
-  res.json(db.itineraries);
+  res.json(db.itineraries || []);
 });
 
 app.post("/api/itineraries", (req: Request, res: Response) => {
   const itinerary = req.body;
   itinerary.id = itinerary.id || `ITN-${Math.floor(10000 + Math.random() * 90000)}`;
+  itinerary.createdAt = itinerary.createdAt || new Date().toLocaleDateString("en-IN");
+  db.itineraries = db.itineraries || [];
   db.itineraries.unshift(itinerary);
   writeDb();
-  logAction("operations", `Created tour guide itinerary plan: ${itinerary.id}`);
+  logAction("operations", `Created tour guide itinerary plan for: ${itinerary.customerName || itinerary.id}`);
   res.status(201).json(itinerary);
 });
 
 app.put("/api/itineraries/:id", (req: Request, res: Response) => {
   const { id } = req.params;
-  const idx = db.itineraries.findIndex(i => i.id === id);
+  db.itineraries = db.itineraries || [];
+  const idx = db.itineraries.findIndex((i: any) => i.id === id);
   if (idx !== -1) {
     db.itineraries[idx] = { ...db.itineraries[idx], ...req.body };
     writeDb();
+    logAction("operations", `Updated itinerary for: ${db.itineraries[idx].customerName || id}`);
     res.json(db.itineraries[idx]);
   } else {
     res.status(404).json({ error: "Itinerary not found" });
@@ -795,9 +799,16 @@ app.put("/api/itineraries/:id", (req: Request, res: Response) => {
 
 app.delete("/api/itineraries/:id", (req: Request, res: Response) => {
   const { id } = req.params;
-  db.itineraries = db.itineraries.filter(i => i.id !== id);
-  writeDb();
-  res.json({ success: true });
+  db.itineraries = db.itineraries || [];
+  const itinerary = db.itineraries.find((i: any) => i.id === id);
+  if (itinerary) {
+    db.itineraries = db.itineraries.filter((i: any) => i.id !== id);
+    writeDb();
+    logAction("admin", `Deleted itinerary for: ${itinerary.customerName || id}`);
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Itinerary not found" });
+  }
 });
 
 // Payments Ledger CRUD
@@ -1112,10 +1123,10 @@ app.post("/api/parse-whatsapp", async (req: Request, res: Response) => {
   res.json(result);
 });
 
-// Itinerary Document Parser (.docx / .doc / .txt)
+// Itinerary Document Parser (.docx / .doc / .pdf / .txt)
 app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request, res: Response) => {
   if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
+    return res.status(200).json({ success: false, message: "No file uploaded" });
   }
 
   try {
@@ -1123,16 +1134,34 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
     const ext = path.extname(req.file.originalname).toLowerCase();
     let rawText = "";
 
+    if (ext === ".doc") {
+      return res.status(200).json({
+        success: false,
+        message: "Old binary .doc files are not supported. Please convert your file to .docx, .pdf, or .txt first."
+      });
+    }
+
     if (ext === ".docx") {
       const mammoth = await import("mammoth");
       const result = await mammoth.extractRawText({ path: filePath });
-      rawText = result.value;
+      rawText = result.value || "";
+    } else if (ext === ".pdf") {
+      try {
+        const pdfParse = (await import("pdf-parse")).default;
+        const dataBuffer = fs.readFileSync(filePath);
+        const pdfData = await pdfParse(dataBuffer);
+        rawText = pdfData.text || "";
+      } catch (pdfErr) {
+        console.error("PDF parse failed, attempting string extraction fallback", pdfErr);
+        rawText = fs.readFileSync(filePath, "utf8");
+      }
     } else {
+      // .txt or other plain text files
       rawText = fs.readFileSync(filePath, "utf8");
     }
 
     if (!rawText.trim()) {
-      return res.status(400).json({ error: "Could not extract plain text from file." });
+      return res.status(200).json({ success: false, message: "Could not extract plain text from file or the file is empty." });
     }
 
     if (process.env.GEMINI_API_KEY) {
@@ -1148,16 +1177,17 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
          });
 
          const response = await generateContentWithRetryAndFallback(ai, {
-           contents: `Extract the day-wise itinerary plan from the following supplier text:
+           contents: `Extract the day-wise itinerary plan from the following travel document text:
 "${rawText}"`,
            config: {
-             systemInstruction: "You are an assistant that parses travel itineraries into a structured day-wise JSON plan. Support itinerary duration from 1 to 15 days.",
+             systemInstruction: "You are an assistant that parses travel itineraries into a structured day-wise JSON plan. For each day, extract the Day Number, Destination, Hotel, Meals, Transport, Sightseeing, Activities, and Notes. Also provide fallback/computed fields 'title', 'stay', and 'activity' to prevent frontend breakage.",
              responseMimeType: "application/json",
              responseSchema: {
                type: Type.OBJECT,
                properties: {
+                 success: { type: Type.BOOLEAN, description: "Always true if parsing succeeded" },
                  customerName: { type: Type.STRING, description: "Name of the customer if mentioned, default 'Standard Guest'" },
-                 destination: { type: Type.STRING, description: "Destination, e.g. Kodaikanal" },
+                 destination: { type: Type.STRING, description: "Overall main destination, e.g. Kodaikanal" },
                  duration: { type: Type.STRING, description: "Duration string, e.g. 3 Days / 2 Nights" },
                  days: {
                    type: Type.ARRAY,
@@ -1165,29 +1195,37 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
                      type: Type.OBJECT,
                      properties: {
                        dayNumber: { type: Type.INTEGER, description: "Day number, starting from 1" },
-                       title: { type: Type.STRING, description: "Brief header for the day, e.g. Arrival & Local Walk" },
-                       activity: { type: Type.STRING, description: "Highly detailed sights, pathways, routes, and day activities" },
-                       stay: { type: Type.STRING, description: "Name of the stay or resort accommodation mentioned, default 'Standard Deluxe Room'" }
+                       destination: { type: Type.STRING, description: "Specific destination or town for this day, e.g. Kodaikanal" },
+                       hotel: { type: Type.STRING, description: "Name of the hotel or resort for this day" },
+                       meals: { type: Type.STRING, description: "Meals included, e.g. Breakfast & Dinner" },
+                       transport: { type: Type.STRING, description: "Transport details, e.g. Private Sedan, AC Cab" },
+                       sightseeing: { type: Type.STRING, description: "Sightseeing attractions visited on this day" },
+                       activities: { type: Type.STRING, description: "Activities done, e.g. Boating, shopping, trekking" },
+                       notes: { type: Type.STRING, description: "Any special instructions or notes for this day" },
+                       title: { type: Type.STRING, description: "A summarized heading for the day, e.g. Arrival & Valley Tour" },
+                       activity: { type: Type.STRING, description: "A descriptive combined paragraph of sightseeing, activities, and transport details" },
+                       stay: { type: Type.STRING, description: "Name of the stay/hotel, matching the 'hotel' field" }
                      },
-                     required: ["dayNumber", "title", "activity", "stay"]
+                     required: ["dayNumber", "destination", "hotel", "meals", "transport", "sightseeing", "activities", "notes", "title", "activity", "stay"]
                    }
                  }
                },
-               required: ["customerName", "destination", "duration", "days"]
+               required: ["success", "customerName", "destination", "duration", "days"]
              }
            }
          });
 
          if (response.text) {
            const parsed = JSON.parse(response.text.trim());
+           parsed.success = true;
            return res.json(parsed);
          }
-      } catch (err) {
+      } catch (err: any) {
          console.error("Gemini itinerary parse failed, using heuristics", err);
       }
     }
 
-    // Smart heuristic parser fallback
+    // Heuristic fallback parser
     const days: any[] = [];
     const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
     let currentDay: any = null;
@@ -1198,17 +1236,32 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
         if (currentDay) {
           days.push(currentDay);
         }
+        const dayNum = parseInt(dayMatch[1], 10);
         currentDay = {
-          dayNumber: parseInt(dayMatch[1], 10),
-          title: dayMatch[2].trim() || `Day ${dayMatch[1]} highlights`,
-          activity: "",
+          dayNumber: dayNum,
+          destination: "Kodaikanal",
+          hotel: "Standard Deluxe Stay",
+          meals: "Breakfast & Dinner",
+          transport: "Private Sedan",
+          sightseeing: dayMatch[2].trim() || "Local sightseeing options",
+          activities: "Trekking, photography, and exploring trails",
+          notes: "Relax and enjoy local climate.",
+          title: dayMatch[2].trim() || `Day ${dayNum} - Local Sightseeing`,
+          activity: dayMatch[2].trim() || "Leisure day and local sightseeing options.",
           stay: "Standard Deluxe Stay"
         };
       } else if (currentDay) {
         if (line.toLowerCase().startsWith("stay:") || line.toLowerCase().startsWith("hotel:")) {
-          currentDay.stay = line.replace(/^(stay|hotel)\s*:\s*/i, "").trim();
+          const hotelVal = line.replace(/^(stay|hotel)\s*:\s*/i, "").trim();
+          currentDay.hotel = hotelVal;
+          currentDay.stay = hotelVal;
+        } else if (line.toLowerCase().startsWith("meals:") || line.toLowerCase().startsWith("meal:")) {
+          currentDay.meals = line.replace(/^(meals|meal)\s*:\s*/i, "").trim();
+        } else if (line.toLowerCase().startsWith("transport:") || line.toLowerCase().startsWith("cab:")) {
+          currentDay.transport = line.replace(/^(transport|cab)\s*:\s*/i, "").trim();
         } else {
           currentDay.activity += (currentDay.activity ? " " : "") + line;
+          currentDay.sightseeing += (currentDay.sightseeing ? ", " : "") + line;
         }
       }
     }
@@ -1217,13 +1270,20 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
       days.push(currentDay);
     }
 
-    // Default generator if structure wasn't captured
+    // Default template generator if structure wasn't captured
     if (days.length === 0) {
       const parts = rawText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
       const limit = Math.min(Math.max(parts.length, 1), 6);
       for (let i = 1; i <= limit; i++) {
         days.push({
           dayNumber: i,
+          destination: "Kodaikanal",
+          hotel: "Standard Hotel (Twin Sharing)",
+          meals: "Breakfast",
+          transport: "Private Sedan",
+          sightseeing: "Local viewpoints, pine forests, and lake",
+          activities: "Boating, strolling, cycling",
+          notes: "Bring warm clothes.",
           title: `Day ${i} - General Sightseeing`,
           activity: parts[i - 1] || "Leisure day and local sightseeing options.",
           stay: "Standard Hotel (Twin Sharing)"
@@ -1231,7 +1291,8 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
       }
     }
 
-    res.json({
+    return res.json({
+      success: true,
       customerName: "Imported Guest",
       destination: "Kodaikanal",
       duration: `${days.length} Days / ${Math.max(days.length - 1, 1)} Nights`,
@@ -1239,7 +1300,7 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
     });
 
   } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to compile travel document" });
+    return res.status(200).json({ success: false, message: err.message || "Failed to compile travel document" });
   }
 });
 
@@ -1681,50 +1742,6 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
   }
 
   res.sendStatus(404);
-});
-
-// Itinerary System endpoints
-app.get("/api/itineraries", (req: Request, res: Response) => {
-  res.json(db.itineraries || []);
-});
-
-app.post("/api/itineraries", (req: Request, res: Response) => {
-  const itinerary = req.body;
-  itinerary.id = itinerary.id || `ITN-${Date.now()}`;
-  itinerary.createdAt = itinerary.createdAt || new Date().toLocaleDateString("en-IN");
-  db.itineraries = db.itineraries || [];
-  db.itineraries.unshift(itinerary);
-  writeDb();
-  logAction("system", `Created itinerary for: ${itinerary.customerName}`);
-  res.status(201).json(itinerary);
-});
-
-app.put("/api/itineraries/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.itineraries = db.itineraries || [];
-  const idx = db.itineraries.findIndex((i: any) => i.id === id);
-  if (idx !== -1) {
-    db.itineraries[idx] = { ...db.itineraries[idx], ...req.body };
-    writeDb();
-    logAction("system", `Updated itinerary for: ${db.itineraries[idx].customerName}`);
-    res.json(db.itineraries[idx]);
-  } else {
-    res.status(404).json({ error: "Itinerary not found" });
-  }
-});
-
-app.delete("/api/itineraries/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.itineraries = db.itineraries || [];
-  const itinerary = db.itineraries.find((i: any) => i.id === id);
-  if (itinerary) {
-    db.itineraries = db.itineraries.filter((i: any) => i.id !== id);
-    writeDb();
-    logAction("admin", `Deleted itinerary for: ${itinerary.customerName}`);
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Itinerary not found" });
-  }
 });
 
 // Vite or Static file serving middleware setup

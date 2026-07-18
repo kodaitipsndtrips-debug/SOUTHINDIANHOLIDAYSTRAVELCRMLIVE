@@ -115,7 +115,8 @@ export default function Header({
                 if (val === "admin") {
                   onImpersonateUser && onImpersonateUser(null);
                 } else {
-                  const targetUser = users.find(u => u.id === val);
+                  const safeUsers = Array.isArray(users) ? users : [];
+                  const targetUser = safeUsers.find(u => u.id === val);
                   if (targetUser && onImpersonateUser) {
                     onImpersonateUser(targetUser);
                   }

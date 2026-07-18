@@ -25,6 +25,7 @@ export default function PackagesTab({
   const [filterDest, setFilterDest] = useState("all");
   const [filterDuration, setFilterDuration] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
+  const [groupBy, setGroupBy] = useState<"none" | "destination" | "category">("none");
 
   const [showForm, setShowForm] = useState(false);
   const [editingPkg, setEditingPkg] = useState<TourPackage | null>(null);
@@ -52,7 +53,6 @@ export default function PackagesTab({
           throw new Error("File must contain a header row and at least one data row.");
         }
 
-        // Parse CSV helper that handles quotes and commas
         const parseCSVLine = (line: string) => {
           const result = [];
           let current = "";
@@ -74,7 +74,6 @@ export default function PackagesTab({
 
         const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase());
         
-        // Find column indices
         const nameIdx = headers.findIndex(h => h.includes("name"));
         const destIdx = headers.findIndex(h => h.includes("dest"));
         const priceIdx = headers.findIndex(h => h.includes("price") || h.includes("rate") || h.includes("cost"));
@@ -83,7 +82,7 @@ export default function PackagesTab({
         const exclusionsIdx = headers.findIndex(h => h.includes("exclus"));
 
         if (nameIdx === -1 || destIdx === -1 || priceIdx === -1) {
-          throw new Error("CSV must include columns for Name, Destination, and Price (e.g. name, destination, price, duration, inclusions, exclusions)");
+          throw new Error("CSV must include columns for Name, Destination, and Price");
         }
 
         let importCount = 0;
@@ -157,8 +156,8 @@ export default function PackagesTab({
       category: "Family Tour",
       price: 15000,
       hotelCategory: "3-Star Deluxe",
-      inclusions: "Standard Hotel Room (Twin Sharing), Direct Private Sedan Sightseeing with driver charges included, Standard morning breakfast buffet",
-      exclusions: "Taxes/GST (5%), Flight ticket fares, Any lunch or dinners, Camera or entry tickets at national parks",
+      inclusions: "Standard Hotel Room (Twin Sharing), Private Sedan Sightseeing with driver charges, Daily Morning Breakfast",
+      exclusions: "Taxes/GST, Flight fares, Personal entry tickets or camera tokens",
       status: "Active"
     });
     setShowForm(true);
@@ -205,7 +204,7 @@ export default function PackagesTab({
     setShowForm(false);
   };
 
-  // Filters logic
+  // Filter lists
   const filteredPackages = safePackages.filter(p => {
     const term = search.toLowerCase();
     const matchesSearch =
@@ -220,50 +219,74 @@ export default function PackagesTab({
     return matchesSearch && matchesDest && matchesDuration && matchesStatus;
   });
 
+  // Grouping helper
+  const groupPackages = () => {
+    if (groupBy === "destination") {
+      const grouped: { [key: string]: TourPackage[] } = {};
+      filteredPackages.forEach(p => {
+        const dest = p.destination || "other";
+        if (!grouped[dest]) grouped[dest] = [];
+        grouped[dest].push(p);
+      });
+      return grouped;
+    } else if (groupBy === "category") {
+      const grouped: { [key: string]: TourPackage[] } = {};
+      filteredPackages.forEach(p => {
+        const cat = p.category || "General Packages";
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(p);
+      });
+      return grouped;
+    }
+    return { "all": filteredPackages };
+  };
+
+  const groupedData = groupPackages();
+
   return (
     <div className="space-y-4">
-      {/* Title block */}
+      {/* Title banner */}
       <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-indigo-600/10 border border-indigo-500/20 text-indigo-400 rounded-xl">
             <Lucide.Compass className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-300">Package Library & Management</h3>
-            <p className="text-[10px] text-slate-500 font-semibold">Store, duplicate, search, and map standardized vacation itineraries</p>
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-300">Package Catalog Library</h3>
+            <p className="text-[10px] text-slate-500 font-semibold">Store, organize, duplicate, search, and pre-load standardized holiday parameters</p>
           </div>
         </div>
         <div className="flex gap-2">
           <button
             onClick={() => setShowBulkUpload(!showBulkUpload)}
-            className="bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+            className="bg-slate-850 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
           >
             <Lucide.FileSpreadsheet className="w-4 h-4 text-emerald-400" />
             Bulk CSV Upload
           </button>
           <button
             onClick={openAddForm}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-indigo-600/10"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow"
           >
             <Lucide.Plus className="w-4 h-4" />
-            Create New Package
+            Create Package
           </button>
         </div>
       </div>
 
       {/* Bulk Upload CSV Drawer */}
       {showBulkUpload && (
-        <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3.5 animate-fadeIn">
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3 animate-fadeIn">
           <div className="flex justify-between items-center border-b border-slate-800 pb-2">
             <h4 className="text-xs font-black uppercase text-emerald-400 flex items-center gap-1.5">
-              <Lucide.FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              Bulk Package CSV Importer (Drag & Drop)
+              <Lucide.FileSpreadsheet className="w-4 h-4" />
+              CSV Importer Tool
             </h4>
             <button onClick={() => setShowBulkUpload(false)} className="text-slate-400 hover:text-white cursor-pointer"><Lucide.X className="w-4 h-4" /></button>
           </div>
           <p className="text-[10px] text-slate-400">
             Import dozens of catalog packages instantly. Drag and drop a standard `.csv` file. 
-            Required headers: <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Name</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Destination</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Price</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Duration</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Inclusions</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Exclusions</code>.
+            Required headers: <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Name</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Destination</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Price</code>, <code className="text-indigo-400 bg-slate-950 px-1 py-0.5 rounded">Duration</code>.
           </p>
 
           <div className="flex flex-col md:flex-row gap-4">
@@ -279,20 +302,20 @@ export default function PackagesTab({
                 type="file"
                 accept=".csv"
                 onChange={(e) => { if (e.target.files?.[0]) handleCSVImport(e.target.files[0]); }}
-                id="csv-bulk-field"
+                id="csv-bulk-input"
                 className="hidden"
               />
-              <label htmlFor="csv-bulk-field" className="cursor-pointer block space-y-2">
+              <label htmlFor="csv-bulk-input" className="cursor-pointer block space-y-2">
                 <Lucide.Upload className="w-8 h-8 text-emerald-400 mx-auto animate-bounce" />
                 <span className="text-[10px] font-bold text-slate-300 block">Click or Drag & Drop Catalog CSV file</span>
                 <span className="text-[8px] text-slate-500 block">Accepts .CSV files only</span>
               </label>
             </div>
 
-            <div className="w-full md:w-64 bg-slate-950/40 border border-slate-850 p-3 rounded-xl flex flex-col justify-between gap-3">
+            <div className="w-full md:w-64 bg-slate-950/45 border border-slate-850 p-3 rounded-xl flex flex-col justify-between gap-3">
               <div>
                 <span className="text-[9px] uppercase font-black text-slate-500 block mb-1">Get Started Fast</span>
-                <p className="text-[10px] text-slate-400 leading-relaxed">Download our pre-structured template CSV file containing mock travel packages to map your columns instantly.</p>
+                <p className="text-[10px] text-slate-400 leading-relaxed">Download our pre-structured template CSV file containing mock travel packages.</p>
               </div>
               <button
                 onClick={downloadSampleCSV}
@@ -307,14 +330,14 @@ export default function PackagesTab({
 
           {bulkError && (
             <div className="bg-rose-950/25 border border-rose-900/35 p-2.5 rounded-lg text-[10px] text-rose-400 font-bold flex items-center gap-1.5">
-              <Lucide.AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+              <Lucide.AlertCircle className="w-3.5 h-3.5" />
               <span>{bulkError}</span>
             </div>
           )}
 
           {bulkSuccess && (
             <div className="bg-emerald-950/25 border border-emerald-900/35 p-2.5 rounded-lg text-[10px] text-emerald-400 font-bold flex items-center gap-1.5">
-              <Lucide.CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+              <Lucide.CheckCircle className="w-3.5 h-3.5" />
               <span>{bulkSuccess}</span>
             </div>
           )}
@@ -323,10 +346,10 @@ export default function PackagesTab({
 
       {/* Package Form (Add / Edit) */}
       {showForm && (
-        <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 animate-fadeIn">
+        <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 animate-fadeIn">
           <div className="border-b border-slate-800 pb-2">
             <h4 className="text-xs font-black uppercase text-indigo-400">
-              {editingPkg ? "Modify Standard Tour Template" : "Standardize New Vacation Package"}
+              {editingPkg ? `Modify Package - ${editingPkg.name}` : "Create Standard Catalog Package"}
             </h4>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -337,7 +360,7 @@ export default function PackagesTab({
                 required
                 value={formFields.name}
                 onChange={(e) => setFormFields(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="e.g. Kodaikanal Luxury Couple Special"
+                placeholder="e.g. Ooty Misty Meadows Tour"
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-white focus:outline-none"
               />
             </div>
@@ -374,7 +397,7 @@ export default function PackagesTab({
                 type="text"
                 value={formFields.category}
                 onChange={(e) => setFormFields(prev => ({ ...prev, category: e.target.value }))}
-                placeholder="e.g. Honeymoon / Adventure / Family"
+                placeholder="e.g. Honeymoon / Family / Adventure"
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-white focus:outline-none"
               />
             </div>
@@ -394,7 +417,7 @@ export default function PackagesTab({
                 type="text"
                 value={formFields.hotelCategory}
                 onChange={(e) => setFormFields(prev => ({ ...prev, hotelCategory: e.target.value }))}
-                placeholder="e.g. 3-Star Premium Resort"
+                placeholder="e.g. 3-Star Premium Resort Stay"
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-white focus:outline-none"
               />
             </div>
@@ -403,7 +426,7 @@ export default function PackagesTab({
               <textarea
                 value={formFields.inclusions}
                 onChange={(e) => setFormFields(prev => ({ ...prev, inclusions: e.target.value }))}
-                placeholder="Describe what is covered in the standard package price..."
+                placeholder="Describe features covered in package..."
                 className="w-full h-16 bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-white focus:outline-none resize-none"
               />
             </div>
@@ -412,7 +435,7 @@ export default function PackagesTab({
               <textarea
                 value={formFields.exclusions}
                 onChange={(e) => setFormFields(prev => ({ ...prev, exclusions: e.target.value }))}
-                placeholder="Describe items NOT covered..."
+                placeholder="Describe items excluded..."
                 className="w-full h-16 bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-white focus:outline-none resize-none"
               />
             </div>
@@ -446,19 +469,19 @@ export default function PackagesTab({
         </form>
       )}
 
-      {/* Filter panel */}
-      <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-wrap gap-3 items-center justify-between">
+      {/* SEARCH, FILTER AND GROUPING PANEL */}
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-wrap gap-3 items-center justify-between shadow">
         <div className="relative flex-1 min-w-[240px]">
           <Lucide.Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search packages by name, destination, class..."
-            className="w-full bg-slate-950 border border-slate-850 pl-9 pr-4 py-2 rounded-xl text-xs text-white focus:outline-none"
+            placeholder="Search packages by name, destination, category..."
+            className="w-full bg-slate-950 border border-slate-850 pl-9 pr-4 py-2 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
           />
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           {/* Destination filter */}
           <select
             value={filterDest}
@@ -487,6 +510,17 @@ export default function PackagesTab({
             <option value="4 Nights">4 Nights</option>
           </select>
 
+          {/* Group By selector */}
+          <select
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as any)}
+            className="bg-slate-950 border border-indigo-500/25 p-2 rounded-lg text-xs text-slate-300 font-bold focus:outline-none"
+          >
+            <option value="none">No Grouping</option>
+            <option value="destination">Group by Destination</option>
+            <option value="category">Group by Category</option>
+          </select>
+
           {/* Status filter */}
           <select
             value={filterStatus}
@@ -494,113 +528,127 @@ export default function PackagesTab({
             className="bg-slate-950 border border-slate-850 p-2 rounded-lg text-xs text-slate-300 focus:outline-none"
           >
             <option value="all">-- Status --</option>
-            <option value="Active">Active</option>
-            <option value="Inactive">Inactive</option>
+            <option value="Active">Active Only</option>
+            <option value="Inactive">Inactive Only</option>
           </select>
         </div>
       </div>
 
-      {/* Package Library Table (Requirement from user: 'Display saved packages in a searchable table') */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-950/40 text-[9px] uppercase font-black tracking-wider text-slate-400 border-b border-slate-850">
-              <tr>
-                <th className="p-4">Package Name</th>
-                <th className="p-4">Destination</th>
-                <th className="p-4">Duration</th>
-                <th className="p-4">Price / Person</th>
-                <th className="p-4">Category</th>
-                <th className="p-4">Status</th>
-                <th className="p-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-850">
-              {filteredPackages.map(pkg => (
-                <tr key={pkg.id} className="hover:bg-slate-950/25 transition-all">
-                  <td className="p-4 font-black text-white">
-                    <p>{pkg.name}</p>
-                    <span className="text-[9px] font-mono font-medium text-indigo-400">{pkg.hotelCategory}</span>
-                  </td>
-                  <td className="p-4 capitalize font-semibold text-slate-300">
-                    <span className="flex items-center gap-1">
-                      <Lucide.MapPin className="w-3.5 h-3.5 text-indigo-400" />
-                      {pkg.destination}
-                    </span>
-                  </td>
-                  <td className="p-4 font-medium text-slate-400">{pkg.duration}</td>
-                  <td className="p-4 font-black text-emerald-400 font-mono">₹{pkg.price.toLocaleString("en-IN")}</td>
-                  <td className="p-4 font-medium text-slate-400">{pkg.category}</td>
-                  <td className="p-4">
-                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase ${
-                      pkg.status === "Active" ? "bg-emerald-950 text-emerald-400 border border-emerald-900/30" : "bg-slate-950 text-slate-500 border border-slate-900"
-                    }`}>
-                      {pkg.status}
-                    </span>
-                  </td>
-                  <td className="p-4 text-right">
-                    <div className="flex justify-end gap-1.5">
-                      {/* Action Triggers */}
-                      <button
-                        onClick={() => setViewingPkg(pkg)}
-                        className="p-1 text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer"
-                        title="View Specifications"
-                      >
-                        <Lucide.Eye className="w-3.5 h-3.5" />
-                      </button>
+      {/* PREMIUM CARDS GRID LAYOUT WITH GROUPING SUPPORT */}
+      <div className="space-y-6">
+        {Object.keys(groupedData).map(groupName => {
+          const pkgs = groupedData[groupName];
+          if (pkgs.length === 0) return null;
+
+          return (
+            <div key={groupName} className="space-y-3">
+              {groupBy !== "none" && (
+                <div className="flex items-center gap-2 border-b border-slate-850 pb-2">
+                  <div className="w-1.5 h-4 bg-indigo-500 rounded-full"></div>
+                  <h4 className="text-xs font-black uppercase text-indigo-400 tracking-wider capitalize">
+                    {groupName} ({pkgs.length})
+                  </h4>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {pkgs.map(pkg => (
+                  <div
+                    key={pkg.id}
+                    className="bg-slate-900 border border-slate-800 hover:border-slate-700 p-4 rounded-2xl flex flex-col justify-between space-y-4 hover:shadow-lg transition-all"
+                  >
+                    {/* Header and badge */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest bg-indigo-950 px-2 py-0.5 rounded-md capitalize flex items-center gap-1">
+                          <Lucide.MapPin className="w-3 h-3 text-indigo-400" />
+                          {pkg.destination}
+                        </span>
+                        <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                          pkg.status === "Active" ? "bg-emerald-950 text-emerald-400 border border-emerald-900/30" : "bg-slate-950 text-slate-500"
+                        }`}>
+                          {pkg.status}
+                        </span>
+                      </div>
+                      <h4 className="text-xs font-black text-white line-clamp-1">{pkg.name}</h4>
+                      <p className="text-[10px] text-slate-400 font-semibold">{pkg.duration} | <span className="text-slate-500 font-medium font-mono">{pkg.hotelCategory}</span></p>
+                    </div>
+
+                    {/* Features overview */}
+                    <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850 space-y-1 text-[9px] text-slate-400">
+                      <p className="line-clamp-2"><span className="font-bold text-emerald-400 uppercase">Inclusions:</span> {pkg.inclusions || "Not listed"}</p>
+                    </div>
+
+                    {/* Price and Action triggers */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-850">
+                      <div>
+                        <span className="text-[8px] uppercase font-bold text-slate-500 block">Suggested Cost</span>
+                        <span className="text-xs font-black text-emerald-400 font-mono">₹{pkg.price.toLocaleString("en-IN")}<span className="text-[8px] text-slate-500 font-medium">/p</span></span>
+                      </div>
+
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => setViewingPkg(pkg)}
+                          className="p-1.5 text-slate-300 hover:text-white bg-slate-950 hover:bg-slate-800 rounded-lg border border-slate-850 cursor-pointer"
+                          title="View Specifications"
+                        >
+                          <Lucide.Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDuplicate(pkg)}
+                          className="p-1.5 text-amber-400 hover:text-amber-300 bg-slate-950 hover:bg-slate-800 rounded-lg border border-slate-850 cursor-pointer"
+                          title="Duplicate Catalog Item"
+                        >
+                          <Lucide.Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => openEditForm(pkg)}
+                          className="p-1.5 text-indigo-400 hover:text-indigo-300 bg-slate-950 hover:bg-slate-800 rounded-lg border border-slate-850 cursor-pointer"
+                          title="Edit Template"
+                        >
+                          <Lucide.Edit className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirm(`Remove standard template ${pkg.name} from catalog library?`)) {
+                              onDeletePackage(pkg.id);
+                            }
+                          }}
+                          className="p-1.5 text-rose-400 hover:text-rose-300 bg-slate-950 hover:bg-rose-950/20 rounded-lg border border-slate-850 hover:border-rose-900/30 cursor-pointer"
+                          title="Delete Template"
+                        >
+                          <Lucide.Trash className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Large conversion buttons */}
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
                       <button
                         onClick={() => onUseInQuotation(pkg)}
-                        className="p-1 text-sky-400 hover:text-sky-300 bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer text-[10px] font-bold px-1.5"
-                        title="Use in Quotation Studio"
+                        className="w-full bg-slate-950 hover:bg-indigo-900/20 border border-slate-800 text-sky-400 hover:text-sky-300 font-bold py-1.5 rounded-lg text-[9px] tracking-wider uppercase transition-all cursor-pointer"
                       >
-                        Quotation
+                        Quotation Studio
                       </button>
                       <button
                         onClick={() => onUseInBooking(pkg)}
-                        className="p-1 text-emerald-400 hover:text-emerald-300 bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer text-[10px] font-bold px-1.5"
-                        title="Convert to Live Reservation"
+                        className="w-full bg-slate-950 hover:bg-emerald-900/20 border border-slate-800 text-emerald-400 hover:text-emerald-300 font-bold py-1.5 rounded-lg text-[9px] tracking-wider uppercase transition-all cursor-pointer"
                       >
-                        Book
-                      </button>
-                      <button
-                        onClick={() => handleDuplicate(pkg)}
-                        className="p-1 text-amber-400 hover:text-amber-300 bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer"
-                        title="Duplicate Catalog Item"
-                      >
-                        <Lucide.Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => openEditForm(pkg)}
-                        className="p-1 text-indigo-400 hover:text-indigo-300 bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer"
-                        title="Edit Template"
-                      >
-                        <Lucide.Edit className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (confirm(`Remove standard template ${pkg.name} from catalog library?`)) {
-                            onDeletePackage(pkg.id);
-                          }
-                        }}
-                        className="p-1 text-rose-400 hover:text-rose-300 bg-slate-950 hover:bg-slate-850 rounded border border-slate-850 cursor-pointer"
-                        title="Delete Template"
-                      >
-                        <Lucide.Trash className="w-3.5 h-3.5" />
+                        Make Booking
                       </button>
                     </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredPackages.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="p-8 text-center text-slate-500 font-mono">
-                    No travel catalog templates mapped.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {filteredPackages.length === 0 && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-slate-500 font-mono text-xs shadow">
+            No travel catalog templates matched your filters.
+          </div>
+        )}
       </div>
 
       {/* View Package Specifications Modal */}
@@ -630,11 +678,11 @@ export default function PackagesTab({
               </div>
               <div className="space-y-1">
                 <span className="text-[9px] uppercase font-black text-slate-500">Lodging Category:</span>
-                <p className="text-indigo-400 font-bold">{viewingPkg.hotelCategory || "Not Configured"}</p>
+                <p className="text-indigo-400 font-bold">{viewingPkg.hotelCategory || "Standard Lodging"}</p>
               </div>
             </div>
 
-            <div className="space-y-3.5 text-xs pt-2 border-t border-slate-850">
+            <div className="space-y-3 text-xs pt-2 border-t border-slate-850">
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-850">
                 <h5 className="text-[9px] uppercase font-black text-emerald-400 mb-1 tracking-wider">Compulsory Inclusions</h5>
                 <p className="text-slate-300 leading-relaxed whitespace-pre-line font-medium text-[11px]">{viewingPkg.inclusions || "None listed."}</p>
@@ -663,7 +711,7 @@ export default function PackagesTab({
                   }}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg cursor-pointer"
                 >
-                  Create Live Reservation
+                  Create Reservation
                 </button>
               </div>
               <button

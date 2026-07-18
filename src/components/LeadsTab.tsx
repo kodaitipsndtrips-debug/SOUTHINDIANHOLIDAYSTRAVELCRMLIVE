@@ -56,11 +56,12 @@ export default function LeadsTab({
       try {
         const res = await axios.get("/api/whatsapp/conversations");
         const cleanMobile = cleanTargetMobile(viewingLead.mobile);
-        const match = res.data.find((c: any) => c.mobile.replace(/\D/g, "") === cleanMobile);
-        if (match) {
+        const safeConvList = Array.isArray(res.data) ? res.data : [];
+        const match = safeConvList.find((c: any) => c.mobile.replace(/\D/g, "") === cleanMobile);
+        if (match && match.id && match.id !== "undefined") {
           setWhatsappConvId(match.id);
           const msgRes = await axios.get(`/api/whatsapp/conversations/${match.id}/messages`);
-          setWhatsappHistory(msgRes.data || []);
+          setWhatsappHistory(Array.isArray(msgRes.data) ? msgRes.data : []);
         }
       } catch (err) {
         console.error("Failed to load whatsapp timeline history for lead", err);
@@ -139,6 +140,20 @@ export default function LeadsTab({
     });
     setShowForm(true);
   };
+
+  // Real-time duplicate checker on mobile input
+  React.useEffect(() => {
+    if (!leadForm.mobile || editingLead) {
+      setDuplicateWarning("");
+      return;
+    }
+    const isDuplicate = safeLeads.some(l => l.mobile.trim() === leadForm.mobile.trim() && l.mobile.trim() !== "");
+    if (isDuplicate) {
+      setDuplicateWarning(`⚠️ Mobile number ${leadForm.mobile} is already registered to an existing lead in the desk.`);
+    } else {
+      setDuplicateWarning("");
+    }
+  }, [leadForm.mobile, safeLeads, editingLead]);
 
   // Open Lead Form for Edit
   const openEditForm = (lead: Lead) => {

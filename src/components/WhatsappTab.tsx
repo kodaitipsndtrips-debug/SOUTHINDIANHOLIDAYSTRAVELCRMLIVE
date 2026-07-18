@@ -119,7 +119,7 @@ export default function WhatsappTab({
     const handlePreselection = async () => {
       const cleanTarget = preselectedMobile.replace(/\D/g, "");
       // Search in current conversations
-      let match = conversations.find(c => c.mobile.replace(/\D/g, "") === cleanTarget);
+      let match = safeConversations.find(c => c.mobile.replace(/\D/g, "") === cleanTarget);
 
       if (match) {
         setActiveSubTab("inbox");
@@ -127,7 +127,7 @@ export default function WhatsappTab({
         if (clearPreselectedMobile) clearPreselectedMobile();
       } else {
         // Find lead name for initialization
-        const lead = leads.find(l => l.mobile.replace(/\D/g, "") === cleanTarget);
+        const lead = safeLeads.find(l => l.mobile.replace(/\D/g, "") === cleanTarget);
         try {
           const res = await axios.post("/api/whatsapp/conversations", {
             customerName: lead ? lead.name : "Direct Client",
@@ -135,7 +135,7 @@ export default function WhatsappTab({
             assignedTo: currentUser?.username || "admin"
           });
           const newConv = res.data;
-          setConversations(prev => [newConv, ...prev]);
+          setConversations(prev => [newConv, ...(Array.isArray(prev) ? prev : [])]);
           setActiveSubTab("inbox");
           handleSelectConversation(newConv.id);
           if (clearPreselectedMobile) clearPreselectedMobile();
@@ -145,7 +145,7 @@ export default function WhatsappTab({
       }
     };
 
-    if (conversations.length > 0) {
+    if (safeConversations.length > 0) {
       handlePreselection();
     }
   }, [preselectedMobile, conversations, leads, currentUser]);
@@ -154,9 +154,13 @@ export default function WhatsappTab({
   const fetchConversations = async () => {
     try {
       const res = await axios.get("/api/whatsapp/conversations");
-      setConversations(res.data);
-      if (res.data.length > 0 && !selectedConvId) {
-        handleSelectConversation(res.data[0].id);
+      const safeData = Array.isArray(res.data) ? res.data : [];
+      setConversations(safeData);
+      if (safeData.length > 0 && !selectedConvId) {
+        const firstConv = safeData[0];
+        if (firstConv && firstConv.id && firstConv.id !== "undefined") {
+          handleSelectConversation(firstConv.id);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch conversations", err);
@@ -167,7 +171,7 @@ export default function WhatsappTab({
   const fetchTemplates = async () => {
     try {
       const res = await axios.get("/api/whatsapp/templates");
-      setTemplates(res.data);
+      setTemplates(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error("Failed to fetch WhatsApp templates", err);
     }
@@ -177,7 +181,7 @@ export default function WhatsappTab({
   const fetchLogs = async () => {
     try {
       const res = await axios.get("/api/whatsapp/logs");
-      setLogs(res.data);
+      setLogs(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error("Failed to fetch WhatsApp logs", err);
     }
@@ -187,7 +191,7 @@ export default function WhatsappTab({
   const fetchUsers = async () => {
     try {
       const res = await axios.get("/api/users");
-      setUsersList(res.data || []);
+      setUsersList(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error("Failed to fetch CRM users for assignment", err);
     }
@@ -195,63 +199,128 @@ export default function WhatsappTab({
 
   // Select conversation & fetch messages
   const handleSelectConversation = async (convId: string) => {
+    if (!convId || convId === "undefined") {
+      console.warn("Skipping handleSelectConversation: conversation ID is undefined");
+      return;
+    }
     setSelectedConvId(convId);
     try {
       const res = await axios.get(`/api/whatsapp/conversations/${convId}/messages`);
-      setMessages(res.data);
+      setMessages(Array.isArray(res.data) ? res.data : []);
       // Mark as read
       await axios.put(`/api/whatsapp/conversations/${convId}/read`);
-      setConversations(prev => prev.map(c => c.id === convId ? { ...c, unreadCount: 0 } : c));
+      setConversations(prev => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        return safePrev.map(c => c.id === convId ? { ...c, unreadCount: 0 } : c);
+      });
     } catch (err) {
       console.error("Failed to fetch conversation messages", err);
     }
   };
 
-  // Real-time WebSocket subscription
+  // Real-time WebSocket subscription (Optional & Graceful)
   useEffect(() => {
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}`;
-    const socket = new WebSocket(wsUrl);
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let attempts = 0;
+    const maxAttempts = 3;
+    let isDisposed = false;
 
-    socket.onmessage = (event) => {
+    function connect() {
+      if (isDisposed) return;
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === "message_received") {
-          const { message, conversation } = data;
-          
-          setConversations(prev => {
-            const exists = prev.some(c => c.id === conversation.id);
-            if (exists) {
-              return prev.map(c => c.id === conversation.id ? {
-                ...c,
-                lastMessage: conversation.lastMessage,
-                lastTimestamp: conversation.lastTimestamp,
-                unreadCount: selectedConvId === conversation.id ? 0 : conversation.unreadCount
-              } : c).sort((a, b) => new Date(b.lastTimestamp).getTime() - new Date(a.lastTimestamp).getTime());
-            } else {
-              return [conversation, ...prev];
-            }
-          });
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${wsProtocol}//${window.location.host}`;
+        
+        socket = new WebSocket(wsUrl);
 
-          if (selectedConvId === message.conversationId) {
-            setMessages(prev => {
-              if (prev.some(m => m.id === message.id)) return prev;
-              return [...prev, message];
-            });
-            // Mark as read immediately on client side
-            axios.put(`/api/whatsapp/conversations/${message.conversationId}/read`).catch(console.error);
+        socket.onopen = () => {
+          if (isDisposed) return;
+          attempts = 0; // Reset reconnection attempts
+        };
+
+        socket.onmessage = (event) => {
+          if (isDisposed) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "message_received") {
+              const { message, conversation } = data;
+              
+              setConversations(prev => {
+                const safePrev = Array.isArray(prev) ? prev : [];
+                const exists = safePrev.some(c => c.id === conversation.id);
+                if (exists) {
+                  return safePrev.map(c => c.id === conversation.id ? {
+                    ...c,
+                    lastMessage: conversation.lastMessage,
+                    lastTimestamp: conversation.lastTimestamp,
+                    unreadCount: selectedConvId === conversation.id ? 0 : conversation.unreadCount
+                  } : c).sort((a, b) => new Date(b.lastTimestamp).getTime() - new Date(a.lastTimestamp).getTime());
+                } else {
+                  return [conversation, ...safePrev];
+                }
+              });
+
+              if (selectedConvId === message.conversationId) {
+                setMessages(prev => {
+                  const safePrev = Array.isArray(prev) ? prev : [];
+                  if (safePrev.some(m => m.id === message.id)) return safePrev;
+                  return [...safePrev, message];
+                });
+                // Mark as read immediately on client side
+                if (message.conversationId && message.conversationId !== "undefined") {
+                  axios.put(`/api/whatsapp/conversations/${message.conversationId}/read`).catch(() => {
+                    // Ignore error silently since WS is optional
+                  });
+                }
+              }
+            } else if (data.type === "conversation_updated") {
+              const { conversation } = data;
+              setConversations(prev => {
+                const safePrev = Array.isArray(prev) ? prev : [];
+                return safePrev.map(c => c.id === conversation.id ? { ...c, ...conversation } : c);
+              });
+            }
+          } catch (err) {
+            console.warn("WebSocket payload parse error", err);
           }
-        } else if (data.type === "conversation_updated") {
-          const { conversation } = data;
-          setConversations(prev => prev.map(c => c.id === conversation.id ? { ...c, ...conversation } : c));
-        }
+        };
+
+        socket.onerror = (err) => {
+          // Graceful error logging - do not crash
+          console.warn("WebSocket optional connection error:", err);
+        };
+
+        socket.onclose = () => {
+          if (isDisposed) return;
+          if (attempts < maxAttempts) {
+            reconnectTimeout = setTimeout(() => {
+              attempts++;
+              connect();
+            }, 3000);
+          } else {
+            console.warn("WebSocket max reconnection attempts reached. Continuing with client-side polling/interaction.");
+          }
+        };
       } catch (err) {
-        console.error("WebSocket payload error", err);
+        console.warn("WebSocket setup error (WebSocket is optional):", err);
       }
-    };
+    }
+
+    connect();
 
     return () => {
-      socket.close();
+      isDisposed = true;
+      if (socket) {
+        try {
+          socket.close();
+        } catch (e) {
+          // ignore
+        }
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
     };
   }, [selectedConvId]);
 
@@ -261,7 +330,7 @@ export default function WhatsappTab({
   }, [messages]);
 
   // Active Conversation Accessor
-  const activeConv = conversations.find(c => c.id === selectedConvId);
+  const activeConv = safeConversations.find(c => c.id === selectedConvId);
 
   // Dynamic Bracket Replacer for Active Customer Template selection
   const compileForActiveCustomer = (tplText: string) => {
@@ -269,10 +338,10 @@ export default function WhatsappTab({
     let text = tplText;
 
     const mobileClean = activeConv.mobile.replace(/\D/g, "");
-    const matchingLead = leads.find(l => l.mobile.replace(/\D/g, "") === mobileClean);
-    const matchingBooking = bookings.find(b => b.customerMobile.replace(/\D/g, "") === mobileClean);
-    const matchingVoucher = vouchers.find(v => v.guestMobile?.replace(/\D/g, "") === mobileClean);
-    const matchingPayment = payments.find(p => p.bookingId === matchingBooking?.id);
+    const matchingLead = safeLeads.find(l => l.mobile.replace(/\D/g, "") === mobileClean);
+    const matchingBooking = safeBookings.find(b => b.customerMobile.replace(/\D/g, "") === mobileClean);
+    const matchingVoucher = safeVouchers.find(v => v.guestMobile?.replace(/\D/g, "") === mobileClean);
+    const matchingPayment = safePayments.find(p => p.bookingId === matchingBooking?.id);
 
     // Fallbacks
     const customerName = activeConv.customerName;
@@ -325,7 +394,7 @@ export default function WhatsappTab({
   // Send WhatsApp message inside Inbox
   const handleSendMessage = async (e?: React.FormEvent, customPayload?: { attachmentUrl?: string; attachmentType?: 'pdf' | 'image' }) => {
     if (e) e.preventDefault();
-    if (!selectedConvId) return;
+    if (!selectedConvId || selectedConvId === "undefined") return;
     if (!chatInput.trim() && !customPayload) return;
 
     try {
@@ -393,10 +462,13 @@ export default function WhatsappTab({
 
   // Change active user assignment
   const handleAssignAgent = async (username: string) => {
-    if (!selectedConvId) return;
+    if (!selectedConvId || selectedConvId === "undefined") return;
     try {
       const res = await axios.put(`/api/whatsapp/conversations/${selectedConvId}/assign`, { assignedTo: username });
-      setConversations(prev => prev.map(c => c.id === selectedConvId ? { ...c, assignedTo: username } : c));
+      setConversations(prev => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        return safePrev.map(c => c.id === selectedConvId ? { ...c, assignedTo: username } : c);
+      });
     } catch (err) {
       console.error("Failed to assign agent", err);
     }
@@ -409,7 +481,7 @@ export default function WhatsappTab({
       return;
     }
 
-    const tpl = templates.find(t => t.id === selectedTemplateId);
+    const tpl = safeTemplates.find(t => t.id === selectedTemplateId);
     if (!tpl) return;
 
     let text = tpl.message;
@@ -424,7 +496,7 @@ export default function WhatsappTab({
       .replace(/{upiId}/g, companySettings?.upiId || "");
 
     if (selectedCategory === "Leads" && selectedRecordId) {
-      const lead = leads.find(l => l.id === selectedRecordId);
+      const lead = safeLeads.find(l => l.id === selectedRecordId);
       if (lead) {
         text = text
           .replace(/{customerName}/g, lead.name)
@@ -440,9 +512,9 @@ export default function WhatsappTab({
         setCustomName(lead.name);
       }
     } else if (selectedCategory === "Bookings" && selectedRecordId) {
-      const bk = bookings.find(b => b.id === selectedRecordId);
+      const bk = safeBookings.find(b => b.id === selectedRecordId);
       if (bk) {
-        const pay = payments.find(p => p.bookingId === bk.id);
+        const pay = safePayments.find(p => p.bookingId === bk.id);
         text = text
           .replace(/{customerName}/g, bk.customerName)
           .replace(/{bookingId}/g, bk.id)
@@ -460,7 +532,7 @@ export default function WhatsappTab({
         setCustomName(bk.customerName);
       }
     } else if (selectedCategory === "Vouchers" && selectedRecordId) {
-      const vc = vouchers.find(v => v.id === selectedRecordId);
+      const vc = safeVouchers.find(v => v.id === selectedRecordId);
       if (vc) {
         text = text
           .replace(/{customerName}/g, vc.guestName)
@@ -481,9 +553,9 @@ export default function WhatsappTab({
         setCustomName(vc.guestName);
       }
     } else if (selectedCategory === "Payments" && selectedRecordId) {
-      const pay = payments.find(p => p.id === selectedRecordId);
+      const pay = safePayments.find(p => p.id === selectedRecordId);
       if (pay) {
-        const bk = bookings.find(b => b.id === pay.bookingId);
+        const bk = safeBookings.find(b => b.id === pay.bookingId);
         text = text
           .replace(/{customerName}/g, pay.customerName)
           .replace(/{destination}/g, bk ? bk.destination.toUpperCase() : "TOUR")
@@ -497,7 +569,7 @@ export default function WhatsappTab({
         setCustomName(pay.customerName);
       }
     } else if (selectedCategory === "Fleet" && selectedRecordId) {
-      const drv = drivers.find(d => d.id === selectedRecordId);
+      const drv = safeDrivers.find(d => d.id === selectedRecordId);
       if (drv) {
         text = text
           .replace(/{driverName}/g, drv.name)
@@ -505,8 +577,8 @@ export default function WhatsappTab({
           .replace(/{vehicleType}/g, drv.vehicleType)
           .replace(/{vehicleNo}/g, drv.vehicleNo);
 
-        if (bookings.length > 0) {
-          const firstBk = bookings[0];
+        if (safeBookings.length > 0) {
+          const firstBk = safeBookings[0];
           text = text
             .replace(/{customerName}/g, firstBk.customerName)
             .replace(/{destination}/g, firstBk.destination.toUpperCase());
@@ -584,7 +656,7 @@ export default function WhatsappTab({
       : `https://wa.me/${cleanMobile}?text=${encodedText}`;
 
     try {
-      const activeTpl = templates.find(t => t.id === selectedTemplateId);
+      const activeTpl = safeTemplates.find(t => t.id === selectedTemplateId);
       await axios.post("/api/whatsapp/logs", {
         customerName: customName || "Direct Contact",
         mobile: cleanMobile,

@@ -61,7 +61,8 @@ export default function FollowupsTab({ leads = [], onUpdateLead }: FollowupsTabP
 
   // Handle Mark Complete
   const markComplete = (leadId: string, fuId: string, remarksText: string) => {
-    const lead = leads.find(l => l.id === leadId);
+    const safeLeads = Array.isArray(leads) ? leads : [];
+    const lead = safeLeads.find(l => l.id === leadId);
     if (!lead) return;
 
     const updatedHistory = (lead.followUpHistory || []).map(f => {
@@ -99,7 +100,8 @@ export default function FollowupsTab({ leads = [], onUpdateLead }: FollowupsTabP
 
   const handleReschedule = (leadId: string, fuId: string, newDate: string) => {
     if (!newDate) return;
-    const lead = leads.find(l => l.id === leadId);
+    const safeLeads = Array.isArray(leads) ? leads : [];
+    const lead = safeLeads.find(l => l.id === leadId);
     if (!lead) return;
 
     const updatedHistory = (lead.followUpHistory || []).map(f => {

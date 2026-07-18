@@ -19,6 +19,11 @@ export default function SettingsTab({
   const [uploadError, setUploadError] = useState("");
   const [dragActive, setDragActive] = useState(false);
 
+  // Sync state with parent props if they change
+  React.useEffect(() => {
+    setFormFields({ ...settings });
+  }, [settings]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onUpdateSettings(formFields);
@@ -40,6 +45,25 @@ export default function SettingsTab({
   const processFile = async (file: File) => {
     setUploading(true);
     setUploadError("");
+    setSuccessMsg("");
+
+    // 1. Format validation (PNG, JPG, JPEG, SVG)
+    const allowedExtensions = ["png", "jpg", "jpeg", "svg"];
+    const fileExtension = file.name.split(".").pop()?.toLowerCase();
+    
+    if (!fileExtension || !allowedExtensions.includes(fileExtension)) {
+      setUploadError("Invalid file format. Only PNG, JPG, JPEG, and SVG are supported.");
+      setUploading(false);
+      return;
+    }
+
+    // 2. Size validation (max 5MB)
+    const maxSizeBytes = 5 * 1024 * 1024;
+    if (file.size > maxSizeBytes) {
+      setUploadError("File is too large. Maximum allowed size is 5MB.");
+      setUploading(false);
+      return;
+    }
     
     const formData = new FormData();
     formData.append("file", file);
@@ -51,7 +75,12 @@ export default function SettingsTab({
       });
       const data = await res.json();
       if (data.success && data.url) {
-        setFormFields(prev => ({ ...prev, logo: data.url }));
+        const updated = { ...formFields, logo: data.url };
+        setFormFields(updated);
+        // Persist immediately on upload so user doesn't lose it if they refresh
+        onUpdateSettings(updated);
+        setSuccessMsg("Logo uploaded and updated successfully!");
+        setTimeout(() => setSuccessMsg(""), 4000);
       } else {
         setUploadError(data.error || "Upload failed. Please try again.");
       }
@@ -181,7 +210,13 @@ export default function SettingsTab({
                       />
                       <button
                         type="button"
-                        onClick={() => setFormFields(prev => ({ ...prev, logo: "" }))}
+                        onClick={() => {
+                          const updated = { ...formFields, logo: "" };
+                          setFormFields(updated);
+                          onUpdateSettings(updated);
+                          setSuccessMsg("Logo removed successfully!");
+                          setTimeout(() => setSuccessMsg(""), 3000);
+                        }}
                         className="absolute top-1.5 right-1.5 p-1 bg-slate-900/80 hover:bg-rose-950 hover:text-rose-400 rounded text-slate-400 transition-all opacity-0 group-hover:opacity-100 cursor-pointer"
                         title="Remove Logo"
                       >
