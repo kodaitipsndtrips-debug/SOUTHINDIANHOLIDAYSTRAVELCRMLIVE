@@ -384,7 +384,9 @@ export default function BookingsTab({
               </div>
 
               <div className="flex items-center justify-between border-t border-slate-850 pt-3">
-                <span className="text-emerald-400 font-mono font-black">₹{bk.packagePrice.toLocaleString("en-IN")}</span>
+              <span className="text-emerald-400 font-mono font-black">
+  ₹{Number(bk.packagePrice ?? 0).toLocaleString("en-IN")}
+</span>
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => {
@@ -392,7 +394,7 @@ export default function BookingsTab({
                       if (cleanMobile.length === 10) {
                         cleanMobile = "91" + cleanMobile;
                       }
-                      const confirmationMsg = `Dear ${bk.customerName},\n\nYour booking with South Indian Holidays is CONFIRMED! 🎉✈️\n\nBooking ID: ${bk.id}\n📍 Destination: ${bk.destination.toUpperCase()}\n📅 Travel Date: ${formatFriendlyDate(bk.travelDate)}\n🏨 Stay: ${bk.hotelDetails}\n🚗 Cab details: ${bk.driverDetails || "Awaiting driver assignment"}\n💰 Package Price: ₹${bk.packagePrice.toLocaleString("en-IN")}\n\nOur operations desk will coordinate driver meeting instructions a day prior to departure.\n\nWarm Regards,\nSouth Indian Holidays`;
+                      const confirmationMsg = `Dear ${bk.customerName},\n\nYour booking with South Indian Holidays is CONFIRMED! 🎉✈️\n\nBooking ID: ${bk.id}\n📍 Destination: ${bk.destination.toUpperCase()}\n📅 Travel Date: ${formatFriendlyDate(bk.travelDate)}\n🏨 Stay: ${bk.hotelDetails}\n🚗 Cab details: ${bk.driverDetails || "Awaiting driver assignment"}\n💰 Package Price: ₹${Number(bk.packagePrice ?? 0).toLocaleString("en-IN")}\n\nOur operations desk will coordinate driver meeting instructions a day prior to departure.\n\nWarm Regards,\nSouth Indian Holidays`;
                       window.open(`https://wa.me/${cleanMobile}?text=${encodeURIComponent(confirmationMsg)}`, "_blank", "noopener,noreferrer");
                     }}
                     className="p-1.5 text-emerald-400 hover:text-emerald-300 bg-emerald-950/20 hover:bg-emerald-950/40 border border-emerald-900/30 rounded-lg cursor-pointer"
