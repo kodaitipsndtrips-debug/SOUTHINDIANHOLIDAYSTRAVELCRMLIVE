@@ -62,6 +62,15 @@ const INITIAL_DB = {
     invoicePrefix: "SIH-INV-",
     taxRate: 5
   },
+  destinations: [
+    { id: "DEST-001", name: "Kodaikanal", value: "kodaikanal", status: "Active" },
+    { id: "DEST-002", name: "Ooty", value: "ooty", status: "Active" },
+    { id: "DEST-003", name: "Coorg", value: "coorg", status: "Active" },
+    { id: "DEST-004", name: "Munnar Hills", value: "munnar", status: "Active" },
+    { id: "DEST-005", name: "Mysore", value: "mysore", status: "Active" },
+    { id: "DEST-006", name: "Alleppey Houseboats", value: "alleppey", status: "Active" },
+    { id: "DEST-007", name: "Pondicherry", value: "pondicherry", status: "Active" }
+  ],
   vouchers: [
     {
       id: "HBV-00001",
@@ -1224,6 +1233,22 @@ app.post("/api/hotels", (req: Request, res: Response) => {
   res.status(201).json(hotel);
 });
 
+app.put("/api/hotels/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const idx = db.hotels.findIndex((h: any) => h.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
+  db.hotels[idx] = { ...db.hotels[idx], ...req.body, id };
+  writeDb();
+  res.json(db.hotels[idx]);
+});
+
+app.delete("/api/hotels/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  db.hotels = db.hotels.filter((h: any) => h.id !== id);
+  writeDb();
+  res.json({ success: true });
+});
+
 // Drivers
 app.get("/api/drivers", (req: Request, res: Response) => {
   res.json(db.drivers);
@@ -1237,6 +1262,22 @@ app.post("/api/drivers", (req: Request, res: Response) => {
   res.status(201).json(driver);
 });
 
+app.put("/api/drivers/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const idx = db.drivers.findIndex((d: any) => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Driver not found" });
+  db.drivers[idx] = { ...db.drivers[idx], ...req.body, id };
+  writeDb();
+  res.json(db.drivers[idx]);
+});
+
+app.delete("/api/drivers/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  db.drivers = db.drivers.filter((d: any) => d.id !== id);
+  writeDb();
+  res.json({ success: true });
+});
+
 // Suppliers
 app.get("/api/suppliers", (req: Request, res: Response) => {
   res.json(db.suppliers);
@@ -1248,6 +1289,58 @@ app.post("/api/suppliers", (req: Request, res: Response) => {
   db.suppliers.push(supplier);
   writeDb();
   res.status(201).json(supplier);
+});
+
+app.put("/api/suppliers/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const idx = db.suppliers.findIndex((s: any) => s.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Supplier not found" });
+  db.suppliers[idx] = { ...db.suppliers[idx], ...req.body, id };
+  writeDb();
+  res.json(db.suppliers[idx]);
+});
+
+app.delete("/api/suppliers/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  db.suppliers = db.suppliers.filter((s: any) => s.id !== id);
+  writeDb();
+  res.json({ success: true });
+});
+
+// Destination Master
+app.get("/api/destinations", (req: Request, res: Response) => {
+  res.json(db.destinations || []);
+});
+
+app.post("/api/destinations", (req: Request, res: Response) => {
+  const dest = req.body;
+  dest.id = dest.id || `DEST-${Date.now()}`;
+  dest.value = (dest.value || dest.name || "").toString().trim().toLowerCase().replace(/\s+/g, "-");
+  dest.status = dest.status || "Active";
+  db.destinations = db.destinations || [];
+  db.destinations.push(dest);
+  writeDb();
+  logAction("admin", `Added destination "${dest.name}" to Destination Master`);
+  res.status(201).json(dest);
+});
+
+app.put("/api/destinations/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  db.destinations = db.destinations || [];
+  const idx = db.destinations.findIndex((d: any) => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Destination not found" });
+  db.destinations[idx] = { ...db.destinations[idx], ...req.body, id };
+  writeDb();
+  logAction("admin", `Updated destination "${db.destinations[idx].name}" in Destination Master`);
+  res.json(db.destinations[idx]);
+});
+
+app.delete("/api/destinations/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  db.destinations = (db.destinations || []).filter((d: any) => d.id !== id);
+  writeDb();
+  logAction("admin", `Removed a destination from Destination Master`);
+  res.json({ success: true });
 });
 
 // Users

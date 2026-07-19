@@ -6,31 +6,52 @@ interface DirectoryTabsProps {
   hotels: Hotel[];
   drivers: Driver[];
   suppliers: Supplier[];
+  destinations: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
+  initialSubTab?: "hotels" | "drivers" | "suppliers" | "destinations";
   onAddHotel: (hotel: Partial<Hotel>) => void;
   onAddDriver: (driver: Partial<Driver>) => void;
   onAddSupplier: (supplier: Partial<Supplier>) => void;
   onDeleteHotel: (id: string) => void;
   onDeleteDriver: (id: string) => void;
   onDeleteSupplier: (id: string) => void;
+  onAddDestination: (d: { name: string; value?: string; status?: "Active" | "Inactive" }) => void;
+  onUpdateDestination: (id: string, d: Partial<{ name: string; value: string; status: "Active" | "Inactive" }>) => void;
+  onDeleteDestination: (id: string) => void;
 }
 
 export default function DirectoryTabs({
   hotels = [],
   drivers = [],
   suppliers = [],
+  destinations = [],
+  initialSubTab,
   onAddHotel,
   onAddDriver,
   onAddSupplier,
   onDeleteHotel,
   onDeleteDriver,
-  onDeleteSupplier
+  onDeleteSupplier,
+  onAddDestination,
+  onUpdateDestination,
+  onDeleteDestination
 }: DirectoryTabsProps) {
   const safeHotels = Array.isArray(hotels) ? hotels : [];
   const safeDrivers = Array.isArray(drivers) ? drivers : [];
   const safeSuppliers = Array.isArray(suppliers) ? suppliers : [];
+  const safeDestinations = Array.isArray(destinations) ? destinations : [];
+  const activeDestinations = safeDestinations.filter(d => d.status !== "Inactive");
 
-  const [subTab, setSubTab] = useState<"hotels" | "drivers" | "suppliers">("hotels");
+  const [subTab, setSubTab] = useState<"hotels" | "drivers" | "suppliers" | "destinations">(initialSubTab || "hotels");
   const [showForm, setShowForm] = useState(false);
+
+  // Keep the sub-tab in sync if the user navigates in via a different sidebar link
+  React.useEffect(() => {
+    if (initialSubTab) setSubTab(initialSubTab);
+  }, [initialSubTab]);
+
+  // Destination Master Fields
+  const [destName, setDestName] = useState("");
+  const [editingDestId, setEditingDestId] = useState<string | null>(null);
 
   // Hotels Fields
   const [hotelName, setHotelName] = useState("");
@@ -103,6 +124,30 @@ export default function DirectoryTabs({
     setShowForm(false);
   };
 
+  const handleSaveDestination = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!destName.trim()) return;
+    if (editingDestId) {
+      onUpdateDestination(editingDestId, { name: destName });
+      setEditingDestId(null);
+    } else {
+      onAddDestination({ name: destName });
+    }
+    setDestName("");
+    setShowForm(false);
+  };
+
+  const handleEditDestination = (d: { id: string; name: string }) => {
+    setEditingDestId(d.id);
+    setDestName(d.name);
+    setSubTab("destinations");
+    setShowForm(true);
+  };
+
+  const handleToggleDestinationStatus = (d: { id: string; status: "Active" | "Inactive" }) => {
+    onUpdateDestination(d.id, { status: d.status === "Active" ? "Inactive" : "Active" });
+  };
+
   return (
     <div className="space-y-4">
       {/* Title */}
@@ -143,6 +188,14 @@ export default function DirectoryTabs({
           >
             Suppliers ({suppliers.length})
           </button>
+          <button
+            onClick={() => { setSubTab("destinations"); setShowForm(false); setEditingDestId(null); setDestName(""); }}
+            className={`px-3.5 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+              subTab === "destinations" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"
+            }`}
+          >
+            Destination Master ({safeDestinations.length})
+          </button>
         </div>
       </div>
 
@@ -173,11 +226,9 @@ export default function DirectoryTabs({
               value={hotelDest} onChange={(e) => setHotelDest(e.target.value)}
               className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-slate-300 focus:outline-none capitalize"
             >
-              <option value="kodaikanal">Kodaikanal</option>
-              <option value="ooty">Ooty</option>
-              <option value="coorg">Coorg</option>
-              <option value="munnar">Munnar</option>
-              <option value="alleppey">Alleppey</option>
+              {activeDestinations.map(d => (
+                <option key={d.id} value={d.value}>{d.name}</option>
+              ))}
             </select>
           </div>
           <div>
@@ -278,6 +329,24 @@ export default function DirectoryTabs({
               <input type="number" value={supDues} onChange={(e) => setSupDues(Number(e.target.value))} className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-white focus:outline-none font-mono" />
             </div>
             <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2.5 rounded-xl">Save</button>
+          </div>
+        </form>
+      )}
+
+      {/* Sub Form - Destination Master */}
+      {showForm && subTab === "destinations" && (
+        <form onSubmit={handleSaveDestination} className="bg-slate-900 border border-slate-800 p-5 rounded-2xl grid grid-cols-1 md:grid-cols-4 gap-4 text-xs animate-fadeIn">
+          <div className="md:col-span-3">
+            <label className="block text-[9px] text-slate-400 font-bold uppercase mb-1">Destination Name *</label>
+            <input
+              type="text" required value={destName} onChange={(e) => setDestName(e.target.value)}
+              placeholder="e.g. Wayanad" className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-white focus:outline-none"
+            />
+          </div>
+          <div className="flex items-end">
+            <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2.5 rounded-xl w-full">
+              {editingDestId ? "Update" : "Save"}
+            </button>
           </div>
         </form>
       )}
@@ -408,6 +477,51 @@ export default function DirectoryTabs({
               {safeSuppliers.length === 0 && (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-slate-500 font-mono">No wholesalers logged.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+        {subTab === "destinations" && (
+          <table className="w-full text-left">
+            <thead className="bg-slate-950/40 text-[9px] uppercase font-black tracking-wider text-slate-400 border-b border-slate-850">
+              <tr>
+                <th className="p-3.5">Destination Name</th>
+                <th className="p-3.5">Internal Value</th>
+                <th className="p-3.5 text-center">Status</th>
+                <th className="p-3.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-850">
+              {safeDestinations.map(d => (
+                <tr key={d.id} className="hover:bg-slate-950/20">
+                  <td className="p-3.5 font-black text-white">{d.name}</td>
+                  <td className="p-3.5 font-mono text-slate-500">{d.value}</td>
+                  <td className="p-3.5 text-center">
+                    <button
+                      onClick={() => handleToggleDestinationStatus(d)}
+                      className={`text-[8px] font-black px-2.5 py-0.5 rounded-full uppercase border cursor-pointer ${
+                        d.status === "Active" ? "bg-emerald-950 text-emerald-400 border-emerald-900/30" : "bg-rose-950 text-rose-500 border-rose-900/30"
+                      }`}
+                    >
+                      {d.status}
+                    </button>
+                  </td>
+                  <td className="p-3.5 text-right">
+                    <div className="flex justify-end gap-3">
+                      <button onClick={() => handleEditDestination(d)} className="text-indigo-400 hover:text-indigo-300 cursor-pointer">
+                        <Lucide.Pencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => onDeleteDestination(d.id)} className="text-rose-400 hover:text-rose-300 cursor-pointer">
+                        <Lucide.Trash className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {safeDestinations.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="p-8 text-center text-slate-500 font-mono">No destinations configured yet.</td>
                 </tr>
               )}
             </tbody>

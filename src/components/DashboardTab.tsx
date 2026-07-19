@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import * as Lucide from "lucide-react";
 import axios from "axios";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Legend, Cell, PieChart, Pie } from "recharts";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie } from "recharts";
 import { Lead, Booking, PaymentLedger, TourPackage, ActivityLog } from "../types";
 import { formatFriendlyDate } from "../utils";
 

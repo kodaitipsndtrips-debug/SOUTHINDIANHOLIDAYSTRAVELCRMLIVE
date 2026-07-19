@@ -20,7 +20,6 @@ export default function PaymentsTab({
   const [filterStatus, setFilterStatus] = useState("all");
 
   const [activeLedger, setActiveLedger] = useState<PaymentLedger | null>(null);
-  const [showReceipt, setShowReceipt] = useState<{ ledger: PaymentLedger; inst: any } | null>(null);
 
   // Installment Form Input
   const [instAmount, setInstAmount] = useState(1000);

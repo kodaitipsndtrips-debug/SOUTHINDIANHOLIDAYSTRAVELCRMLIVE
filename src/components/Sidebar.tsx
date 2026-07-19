@@ -11,6 +11,7 @@ interface SidebarProps {
   companyLogo: string;
   sidebarOpen?: boolean;
   setSidebarOpen?: (open: boolean) => void;
+  onLogout?: () => void;
 }
 
 export default function Sidebar({
@@ -21,7 +22,8 @@ export default function Sidebar({
   companyName,
   companyLogo,
   sidebarOpen = false,
-  setSidebarOpen
+  setSidebarOpen,
+  onLogout
 }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -58,7 +60,8 @@ export default function Sidebar({
         { id: "products", label: "Catalog Desk", icon: "Package", roles: ["superadmin", "admin"] },
         { id: "hotels", label: "Hotels Directory", icon: "Building2", roles: ["superadmin", "admin", "operations"] },
         { id: "drivers", label: "Fleet Registry", icon: "Car", roles: ["superadmin", "admin", "operations"] },
-        { id: "suppliers", label: "Supplier Ledger", icon: "Briefcase", roles: ["superadmin", "admin", "operations"] }
+        { id: "suppliers", label: "Supplier Ledger", icon: "Briefcase", roles: ["superadmin", "admin", "operations"] },
+        { id: "destinations", label: "Destination Master", icon: "MapPin", roles: ["superadmin", "admin", "operations"] }
       ]
     },
     {
@@ -266,6 +269,18 @@ export default function Sidebar({
               </div>
             )}
           </div>
+
+          {/* Logout Button */}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              title="Sign Out"
+              className={`mt-2 w-full flex items-center ${isCollapsed ? "justify-center" : "justify-center gap-2"} px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider text-rose-400 bg-rose-500/5 border border-rose-500/20 hover:bg-rose-500/10 hover:border-rose-500/30 transition-all cursor-pointer`}
+            >
+              <Lucide.LogOut className="w-3.5 h-3.5" />
+              {!isCollapsed && <span>Logout</span>}
+            </button>
+          )}
 
           {/* Core Footer Info */}
           {!isCollapsed ? (

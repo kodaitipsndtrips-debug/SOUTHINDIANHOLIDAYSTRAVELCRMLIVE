@@ -8,6 +8,7 @@ interface QuotationsTabProps {
   packages: TourPackage[];
   leads: Lead[];
   itineraries?: any[];
+  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
   selectedPkgFromLibrary: TourPackage | null;
   clearSelectedPkg: () => void;
   selectedLeadForQuotation?: Lead | null;
@@ -38,6 +39,7 @@ export default function QuotationsTab({
   packages = [],
   leads = [],
   itineraries = [],
+  destinations = [],
   selectedPkgFromLibrary,
   clearSelectedPkg,
   selectedLeadForQuotation,
@@ -46,6 +48,8 @@ export default function QuotationsTab({
  }: QuotationsTabProps) {
   const safePackages = Array.isArray(packages) ? packages : [];
   const safeLeads = Array.isArray(leads) ? leads : [];
+  const safeDestinations = Array.isArray(destinations) ? destinations : [];
+  const activeDestinations = safeDestinations.filter(d => d.status !== "Inactive");
 
   // Quotations database state
   const [quotations, setQuotations] = useState<any[]>([]);
@@ -66,7 +70,6 @@ export default function QuotationsTab({
   const [customerEmail, setCustomerEmail] = useState("");
   const [destination, setDestination] = useState("kodaikanal");
   const [travelDate, setTravelDate] = useState("");
-  const [duration, setDuration] = useState("3 Days / 2 Nights");
   const [adults, setAdults] = useState(2);
   const [children, setChildren] = useState(0);
 
@@ -121,7 +124,6 @@ export default function QuotationsTab({
     // Auto calculate initial price for loaded package if exists
     const matchingPkg = safePackages.find(p => p.destination === lead.destination);
     if (matchingPkg) {
-      setDuration(matchingPkg.duration);
       setQuoteItems([
         {
           id: `qi-${Date.now()}-1`,
@@ -139,7 +141,6 @@ export default function QuotationsTab({
   React.useEffect(() => {
     if (selectedPkgFromLibrary) {
       setDestination(selectedPkgFromLibrary.destination);
-      setDuration(selectedPkgFromLibrary.duration);
       setQuoteItems([
         {
           id: `qi-pkg-lib`,
@@ -1034,13 +1035,13 @@ export default function QuotationsTab({
                     onChange={(e) => setDestination(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-850 p-2 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
                   >
-                    <option value="kodaikanal">Kodaikanal</option>
-                    <option value="ooty">Ooty</option>
-                    <option value="coorg">Coorg</option>
-                    <option value="munnar">Munnar</option>
-                    <option value="mysore">Mysore</option>
-                    <option value="alleppey">Alleppey</option>
-                    <option value="pondicherry">Pondicherry</option>
+                    {activeDestinations.length > 0 ? (
+                      activeDestinations.map(d => (
+                        <option key={d.id} value={d.value}>{d.name}</option>
+                      ))
+                    ) : (
+                      <option value="kodaikanal">Kodaikanal</option>
+                    )}
                   </select>
                 </div>
                 <div>

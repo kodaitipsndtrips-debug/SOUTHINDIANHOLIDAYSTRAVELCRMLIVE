@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import * as Lucide from "lucide-react";
 import axios from "axios";
-import { Lead, FollowUp, User, Booking, Itinerary } from "../types";
+import { Lead, FollowUp, User, Booking } from "../types";
 import { parseWhatsAppChat, getLocalDateString, formatFriendlyDate } from "../utils";
 
 interface LeadsTabProps {
@@ -16,6 +16,7 @@ interface LeadsTabProps {
   onAddBooking?: (bk: Partial<Booking>) => void;
   onAddItinerary?: (itn: any) => void;
   onSelectLeadForQuotation?: (lead: Lead) => void;
+  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
 }
 
 export default function LeadsTab({
@@ -29,15 +30,17 @@ export default function LeadsTab({
   setCurrentTab,
   onAddBooking,
   onAddItinerary,
-  onSelectLeadForQuotation
+  onSelectLeadForQuotation,
+  destinations = []
 }: LeadsTabProps) {
   const safeLeads = Array.isArray(leads) ? leads : [];
   const safeUsers = Array.isArray(users) ? users : [];
+  const activeDestinations = (Array.isArray(destinations) ? destinations : []).filter(d => d.status !== "Inactive");
 
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterPriority, setFilterPriority] = useState("all");
-  const [filterDest, setFilterDest] = useState("all");
+  const filterDest = "all";
   
   const [showForm, setShowForm] = useState(false);
   const [editingLead, setEditingLead] = useState<Lead | null>(null);
@@ -51,7 +54,6 @@ export default function LeadsTab({
   // Lead Modal / Detail States
   const [viewingLead, setViewingLead] = useState<Lead | null>(null);
   const [whatsappHistory, setWhatsappHistory] = useState<any[]>([]);
-  const [whatsappConvId, setWhatsappConvId] = useState<string>("");
 
   // Rebuild/Stabilize Follow-up states
   const [showAddFollowupModal, setShowAddFollowupModal] = useState<Lead | null>(null);
@@ -68,12 +70,10 @@ export default function LeadsTab({
 
   // Action Menu state
   const [activeActionMenuLeadId, setActiveActionMenuLeadId] = useState<string | null>(null);
-  const [quickAssignLeadId, setQuickAssignLeadId] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (!viewingLead) {
       setWhatsappHistory([]);
-      setWhatsappConvId("");
       return;
     }
 
@@ -84,7 +84,6 @@ export default function LeadsTab({
         const safeConvList = Array.isArray(res.data) ? res.data : [];
         const match = safeConvList.find((c: any) => c.mobile.replace(/\D/g, "") === cleanMobile);
         if (match && match.id && match.id !== "undefined") {
-          setWhatsappConvId(match.id);
           const msgRes = await axios.get(`/api/whatsapp/conversations/${match.id}/messages`);
           setWhatsappHistory(Array.isArray(msgRes.data) ? msgRes.data : []);
         }
@@ -527,13 +526,13 @@ export default function LeadsTab({
                 onChange={(e) => setLeadForm(prev => ({ ...prev, destination: e.target.value }))}
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
               >
-                <option value="kodaikanal">Kodaikanal</option>
-                <option value="ooty">Ooty</option>
-                <option value="coorg">Coorg</option>
-                <option value="munnar">Munnar Hills</option>
-                <option value="mysore">Mysore</option>
-                <option value="alleppey">Alleppey Houseboats</option>
-                <option value="pondicherry">Pondicherry</option>
+                {activeDestinations.length > 0 ? (
+                  activeDestinations.map(d => (
+                    <option key={d.id} value={d.value}>{d.name}</option>
+                  ))
+                ) : (
+                  <option value="kodaikanal">Kodaikanal</option>
+                )}
               </select>
             </div>
             <div>
@@ -825,7 +824,6 @@ export default function LeadsTab({
                     <button
                       onClick={() => {
                         setActiveActionMenuLeadId(activeActionMenuLeadId === lead.id ? null : lead.id);
-                        setQuickAssignLeadId(null);
                       }}
                       className="p-1.5 text-slate-300 hover:text-indigo-400 bg-slate-950 hover:bg-indigo-950/20 rounded-lg border border-slate-850 cursor-pointer flex items-center gap-1 text-[10px] font-black uppercase tracking-wider"
                       title="More Actions"
@@ -889,7 +887,6 @@ export default function LeadsTab({
                               onClick={() => {
                                 onUpdateLead(lead.id, { assignedTo: user.username });
                                 alert(`Successfully assigned lead "${lead.name}" to ${user.username}`);
-                                setQuickAssignLeadId(null);
                                 setActiveActionMenuLeadId(null);
                               }}
                               className={`text-[9px] text-left px-2 py-1 rounded transition-all font-semibold ${lead.assignedTo === user.username ? "bg-teal-500/10 text-teal-400 border border-teal-500/20" : "bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white"}`}

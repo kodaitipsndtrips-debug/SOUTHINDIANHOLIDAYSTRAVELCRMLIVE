@@ -6,6 +6,7 @@ interface ItineraryTabProps {
   itineraries: Itinerary[];
   bookings: Booking[];
   packages: TourPackage[];
+  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
   onAddItinerary: (itinerary: Partial<Itinerary>) => void;
   onUpdateItinerary: (id: string, itinerary: Partial<Itinerary>) => void;
   onDeleteItinerary: (id: string) => void;
@@ -158,6 +159,7 @@ export default function ItineraryTab({
   itineraries = [],
   bookings = [],
   packages = [],
+  destinations = [],
   onAddItinerary,
   onUpdateItinerary,
   onDeleteItinerary,
@@ -166,6 +168,7 @@ export default function ItineraryTab({
   const safeItineraries = Array.isArray(itineraries) ? itineraries : [];
   const safeBookings = Array.isArray(bookings) ? bookings : [];
   const safePackages = Array.isArray(packages) ? packages : [];
+  const activeDestinations = (Array.isArray(destinations) ? destinations : []).filter(d => d.status !== "Inactive");
 
   const [showForm, setShowForm] = useState(false);
   const [editingItinerary, setEditingItinerary] = useState<Itinerary | null>(null);
@@ -943,13 +946,13 @@ export default function ItineraryTab({
                   onChange={(e) => setDestination(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-850 p-2 rounded-xl text-xs text-slate-300 focus:outline-none focus:border-indigo-500 capitalize"
                 >
-                  <option value="kodaikanal">Kodaikanal</option>
-                  <option value="ooty">Ooty</option>
-                  <option value="coorg">Coorg</option>
-                  <option value="munnar">Munnar Hills</option>
-                  <option value="mysore">Mysore</option>
-                  <option value="alleppey">Alleppey</option>
-                  <option value="pondicherry">Pondicherry</option>
+                  {activeDestinations.length > 0 ? (
+                    activeDestinations.map(d => (
+                      <option key={d.id} value={d.value}>{d.name}</option>
+                    ))
+                  ) : (
+                    <option value="kodaikanal">Kodaikanal</option>
+                  )}
                 </select>
               </div>
               <div>

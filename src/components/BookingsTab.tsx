@@ -12,6 +12,7 @@ interface BookingsTabProps {
   onAddBooking: (booking: Partial<Booking>) => void;
   onUpdateBooking: (id: string, booking: Partial<Booking>) => void;
   onDeleteBooking: (id: string) => void;
+  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
 }
 
 export default function BookingsTab({
@@ -22,11 +23,12 @@ export default function BookingsTab({
   clearSelectedPkg,
   onAddBooking,
   onUpdateBooking,
-  onDeleteBooking
+  onDeleteBooking,
+  destinations = []
 }: BookingsTabProps) {
   const safeBookings = Array.isArray(bookings) ? bookings : [];
-  const safePackages = Array.isArray(packages) ? packages : [];
   const safeDrivers = Array.isArray(drivers) ? drivers : [];
+  const activeDestinations = (Array.isArray(destinations) ? destinations : []).filter(d => d.status !== "Inactive");
 
   const [search, setSearch] = useState("");
   const [filterDest, setFilterDest] = useState("all");
@@ -197,13 +199,13 @@ export default function BookingsTab({
                 onChange={(e) => setFormFields(prev => ({ ...prev, destination: e.target.value }))}
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
               >
-                <option value="kodaikanal">Kodaikanal</option>
-                <option value="ooty">Ooty</option>
-                <option value="coorg">Coorg</option>
-                <option value="munnar">Munnar Hills</option>
-                <option value="mysore">Mysore</option>
-                <option value="alleppey">Alleppey Houseboats</option>
-                <option value="pondicherry">Pondicherry</option>
+                {activeDestinations.length > 0 ? (
+                  activeDestinations.map(d => (
+                    <option key={d.id} value={d.value}>{d.name}</option>
+                  ))
+                ) : (
+                  <option value="kodaikanal">Kodaikanal</option>
+                )}
               </select>
             </div>
             <div>
@@ -316,10 +318,9 @@ export default function BookingsTab({
             className="bg-slate-950 border border-slate-850 p-2 rounded-lg text-xs text-slate-300 focus:outline-none capitalize"
           >
             <option value="all">-- All Locations --</option>
-            <option value="kodaikanal">Kodaikanal</option>
-            <option value="ooty">Ooty</option>
-            <option value="coorg">Coorg</option>
-            <option value="munnar">Munnar</option>
+            {(Array.isArray(destinations) ? destinations : []).map(d => (
+              <option key={d.id} value={d.value}>{d.name}</option>
+            ))}
           </select>
           <select
             value={filterStatus}
