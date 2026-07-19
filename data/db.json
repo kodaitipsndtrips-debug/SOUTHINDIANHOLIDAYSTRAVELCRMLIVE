@@ -1,0 +1,1018 @@
+{
+  "users": [
+    {
+      "id": "USR-001",
+      "fullName": "Martin Alex",
+      "mobile": "7567891018",
+      "email": "admin@southindianholidays.com",
+      "username": "malex",
+      "password": "admin@123",
+      "role": "superadmin",
+      "status": "Active",
+      "lastLogin": "7/19/2026, 3:05:04 PM",
+      "permissions": {
+        "view": true,
+        "add": true,
+        "edit": true,
+        "delete": true,
+        "modifyRights": true
+      }
+    },
+    {
+      "id": "USR-002",
+      "fullName": "Sales Desk",
+      "mobile": "9450020316",
+      "email": "sales@southindianholidays.co.in",
+      "username": "Neha",
+      "password": "neha@123",
+      "role": "sales",
+      "status": "Active",
+      "lastLogin": "7/19/2026, 3:03:10 PM",
+      "permissions": {
+        "view": true,
+        "add": true,
+        "edit": true,
+        "delete": false,
+        "modifyRights": false
+      }
+    },
+    {
+      "id": "USR-003",
+      "fullName": "Finance Officer",
+      "mobile": "9843210456",
+      "email": "accounts@southindianholidays.com",
+      "username": "accountant",
+      "password": "accountant123",
+      "role": "accountant",
+      "status": "Active",
+      "lastLogin": "Never"
+    },
+    {
+      "id": "USR-004",
+      "fullName": "Operations Coordinator",
+      "mobile": "9043254321",
+      "email": "ops@southindianholidays.com",
+      "username": "operations",
+      "password": "operations123",
+      "role": "operations",
+      "status": "Active",
+      "lastLogin": "Never"
+    }
+  ],
+  "expenses": [
+    {
+      "id": "EXP-1001",
+      "description": "Office rent payment",
+      "amount": 15000,
+      "category": "Rent",
+      "date": "2026-07-01",
+      "approvedBy": "admin"
+    },
+    {
+      "id": "EXP-1002",
+      "description": "Internet broadband charges",
+      "amount": 1200,
+      "category": "Utilities",
+      "date": "2026-07-05",
+      "approvedBy": "admin"
+    },
+    {
+      "id": "EXP-1003",
+      "description": "Driver advance for SIH-BK-2026-1001",
+      "amount": 5000,
+      "category": "Operations",
+      "date": "2026-07-15",
+      "approvedBy": "admin"
+    }
+  ],
+  "settings": {
+    "companyName": "South Indian Holidays & Asset Management Pvt. Ltd.",
+    "gstNumber": "33ABOCS1750P1ZT ",
+    "address": "12, Anna Nagar, Kodaikanal, Tamil Nadu - 625009",
+    "phone": "+91 7567891018",
+    "email": "admin@southindianholidays.co.in",
+    "bankName": "Axis Bank",
+    "bankAccount": "924020027017732",
+    "bankIfsc": "UTIB0004039",
+    "upiId": "kodaitipsndtrips-2@okaxis",
+    "website": "www.southindianholidays.in",
+    "logo": "/uploads/1784431700343-261908.jpg",
+    "quotationPrefix": "SIH-QT-",
+    "voucherPrefix": "SIH-VC-",
+    "invoicePrefix": "SIH-INV-",
+    "taxRate": 5
+  },
+  "vouchers": [],
+  "products": [
+    {
+      "id": "p1",
+      "name": "Kodaikanal Premium 3-Star Package",
+      "price": 14500,
+      "gst": 5,
+      "hsn": "9985"
+    },
+    {
+      "id": "p2",
+      "name": "Ooty Exotic Honeymoon Getaway",
+      "price": 18200,
+      "gst": 5,
+      "hsn": "9985"
+    },
+    {
+      "id": "p3",
+      "name": "Munnar Hills & Tea Garden Escape",
+      "price": 15800,
+      "gst": 5,
+      "hsn": "9985"
+    }
+  ],
+  "leads": [
+    {
+      "name": "WhatsApp Guest",
+      "mobile": "9150978463",
+      "email": "",
+      "destination": "Ernakulam",
+      "travelDate": "5  Sept",
+      "adults": "7",
+      "children": "0",
+      "pickupCity": "Ernakulam",
+      "childrenAges": "",
+      "vehiclePreference": "Tempo Traveller",
+      "notes": "Enquiry parsed automatically:\n7 persons\n9150978463\nErnakulam junction \n 5 Sept \n Tempo traveller",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784473056879",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: Tempo Traveller",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-47747"
+    },
+    {
+      "name": "sahil Mountaineer",
+      "mobile": "9588300634",
+      "email": "",
+      "destination": "kochi",
+      "travelDate": "24 sep",
+      "adults": "40",
+      "children": "0",
+      "pickupCity": "kochi",
+      "childrenAges": "",
+      "vehiclePreference": "Tempo Traveller",
+      "notes": "Enquiry parsed automatically:\nsahil Mountaineer\n9588300634\n24 sep \n40 adults\nKochi \nAc bus",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784472735444",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: Tempo Traveller",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-13090"
+    },
+    {
+      "name": "mahesh",
+      "mobile": "9764560820",
+      "email": "",
+      "destination": "banglore",
+      "travelDate": "15 nov",
+      "adults": "4",
+      "children": "0",
+      "pickupCity": "banglore",
+      "childrenAges": "",
+      "vehiclePreference": "SUV",
+      "notes": "Enquiry parsed automatically:\n mahesh\n9764560820:\n Bangalore\n Nov 15\n4Adult\nSUV",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784472508897",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: SUV",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-57708"
+    },
+    {
+      "name": "abi",
+      "mobile": "8839468893",
+      "email": "",
+      "destination": "hill tour",
+      "travelDate": "20 aug",
+      "adults": "6",
+      "children": "1",
+      "pickupCity": "hill tour",
+      "childrenAges": "",
+      "vehiclePreference": "SUV",
+      "notes": "Enquiry parsed automatically:\nPickup City bhopal\n20 aug\n6+1\nOoty, coorg, kodai, munnar, Alleppey\nWhichever is suitable for 7 travellers \nEither 7+1 or tempo\n8839468893",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784432933474",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: SUV",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-53754"
+    },
+    {
+      "name": "sundar",
+      "mobile": "9047406923",
+      "email": "",
+      "destination": "munnar",
+      "travelDate": "1-8-26",
+      "adults": "30",
+      "children": "0",
+      "pickupCity": "munnar",
+      "childrenAges": "",
+      "vehiclePreference": "Tempo Traveller",
+      "notes": "Enquiry parsed automatically:\n2day\nMunnar\n30 number\n9047406923\n1/8/26",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784432765442",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: Tempo Traveller",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-93601"
+    },
+    {
+      "name": "aanjan",
+      "mobile": "9929224022",
+      "email": "",
+      "destination": "Golden Triangle",
+      "travelDate": "21-7-2026",
+      "adults": "4",
+      "children": "0",
+      "pickupCity": "Golden Triangle",
+      "childrenAges": "",
+      "vehiclePreference": "Sedan",
+      "notes": "Enquiry parsed automatically:\n9929224022\nJodhpur Rajasthan \n21/7/2026\n4 friend \nJaipur,aagra,delli,\nSedan",
+      "source": "WhatsApp",
+      "status": "New",
+      "priority": "Medium",
+      "timeline": [
+        {
+          "timestamp": "19/7/2026",
+          "text": "Lead parsed and registered via WhatsApp Control Center"
+        }
+      ],
+      "followUpHistory": [
+        {
+          "id": "FU-1784432203333",
+          "date": "2026-07-20",
+          "time": "10:00",
+          "type": "Call",
+          "priority": "Medium",
+          "remarks": "Auto-generated welcome follow-up call after WhatsApp enquiry parse. Vehicle preferred: Sedan",
+          "assignedTo": "admin",
+          "status": "Pending"
+        }
+      ],
+      "id": "SIH-LD-41866"
+    }
+  ],
+  "hotels": [
+    {
+      "id": "H-01",
+      "name": "Hotel Hilltop Tower",
+      "destination": "kodaikanal",
+      "rating": "3-Star",
+      "contactPerson": "Rajesh Kumar",
+      "contactPhone": "9443152643",
+      "roomType": "Deluxe Premium",
+      "contractRate": 2800,
+      "availableRooms": 12
+    },
+    {
+      "id": "H-02",
+      "name": "Hotel Baron Ooty",
+      "destination": "ooty",
+      "rating": "3-Star",
+      "contactPerson": "Suresh Nair",
+      "contactPhone": "9842109854",
+      "roomType": "Valley View Deluxe",
+      "contractRate": 3200,
+      "availableRooms": 8
+    }
+  ],
+  "drivers": [
+    {
+      "id": "DRV-01",
+      "name": "Muthu Pandi",
+      "mobile": "9442189765",
+      "vehicleType": "Toyota Innova Crysta",
+      "vehicleNo": "TN-59-BZ-1245",
+      "status": "Available",
+      "rating": "4.9"
+    },
+    {
+      "id": "DRV-02",
+      "name": "Selvam Karuppiah",
+      "mobile": "9843210987",
+      "vehicleType": "Tempo Traveller",
+      "vehicleNo": "TN-58-D-9988",
+      "status": "Available",
+      "rating": "4.7"
+    }
+  ],
+  "suppliers": [
+    {
+      "id": "SUP-01",
+      "name": "Vignesh Transport Madurai",
+      "type": "Transport",
+      "contactPerson": "Vignesh Pillai",
+      "contactPhone": "9843102456",
+      "email": "vigneshtransports@gmail.com",
+      "rating": "4.8",
+      "balanceDue": 12500
+    },
+    {
+      "id": "SUP-02",
+      "name": "Aman Holiday Hotels Group",
+      "type": "Hotel",
+      "contactPerson": "Aman Verma",
+      "contactPhone": "9043254125",
+      "email": "booking@amanhotels.in",
+      "rating": "4.5",
+      "balanceDue": 45000
+    }
+  ],
+  "itineraries": [
+    {
+      "customerName": "Imported Guest",
+      "destination": "delhi, agra, jaipur",
+      "duration": "5 Days / 4 Nights",
+      "days": [
+        {
+          "dayNumber": 1,
+          "title": "Arrival & Sightseeing Base",
+          "activity": "Warm reception. Cozy transfer to hotel. Standard check-in. Inclusions cover: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 2,
+          "title": "Premium Day 2 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 3,
+          "title": "Premium Day 3 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 4,
+          "title": "Premium Day 4 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 5,
+          "title": "Leisure Morning & Checkout Transfer",
+          "activity": "Hearty morning breakfast. Local shopping for tea/spices, checked-out by 11:00 AM. Driver transfer back to departures station.",
+          "stay": "Checkout day"
+        }
+      ],
+      "createdAt": "19/7/2026",
+      "id": "ITN-15899"
+    },
+    {
+      "customerName": "Imported Guest",
+      "destination": "mysore, ooty, coorg",
+      "duration": "6 Days / 5 Nights",
+      "days": [
+        {
+          "dayNumber": 1,
+          "title": "Arrival & Sightseeing Base",
+          "activity": "Warm reception. Cozy transfer to hotel. Standard check-in. Inclusions cover: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 2,
+          "title": "Premium Day 2 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 3,
+          "title": "Premium Day 3 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 4,
+          "title": "Premium Day 4 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 5,
+          "title": "Premium Day 5 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 6,
+          "title": "Leisure Morning & Checkout Transfer",
+          "activity": "Hearty morning breakfast. Local shopping for tea/spices, checked-out by 11:00 AM. Driver transfer back to departures station.",
+          "stay": "Checkout day"
+        }
+      ],
+      "createdAt": "19/7/2026",
+      "id": "ITN-88235"
+    },
+    {
+      "customerName": "Imported Guest",
+      "destination": "munnar, thekkady, alleppey, cochin",
+      "duration": "5 Days / 4 Nights",
+      "days": [
+        {
+          "dayNumber": 1,
+          "title": "Arrival & Sightseeing Base",
+          "activity": "Warm reception. Cozy transfer to hotel. Standard check-in. Inclusions cover: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 2,
+          "title": "Premium Day 2 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 3,
+          "title": "Premium Day 3 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 4,
+          "title": "Premium Day 4 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 5,
+          "title": "Leisure Morning & Checkout Transfer",
+          "activity": "Hearty morning breakfast. Local shopping for tea/spices, checked-out by 11:00 AM. Driver transfer back to departures station.",
+          "stay": "Checkout day"
+        }
+      ],
+      "createdAt": "19/7/2026",
+      "id": "ITN-48722"
+    },
+    {
+      "customerName": "Imported Guest",
+      "destination": "madurai, rameshwaram, kanyakumari",
+      "duration": "5 Days / 4 Nights",
+      "days": [
+        {
+          "dayNumber": 1,
+          "title": "Arrival & Sightseeing Base",
+          "activity": "Warm reception. Cozy transfer to hotel. Standard check-in. Inclusions cover: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 2,
+          "title": "Premium Day 2 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 3,
+          "title": "Premium Day 3 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 4,
+          "title": "Premium Day 4 Tour",
+          "activity": "Full day private sedan excursion tour. Sightseeing: 3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & ... Excludes: Entry tickets; Lunch & Dinner; Personal expenses...",
+          "stay": "3-Star Deluxe"
+        },
+        {
+          "dayNumber": 5,
+          "title": "Leisure Morning & Checkout Transfer",
+          "activity": "Hearty morning breakfast. Local shopping for tea/spices, checked-out by 11:00 AM. Driver transfer back to departures station.",
+          "stay": "Checkout day"
+        }
+      ],
+      "createdAt": "19/7/2026",
+      "id": "ITN-92445"
+    }
+  ],
+  "packages": [
+    {
+      "name": "Madurai Rameshwaram Kanyakumari Tour",
+      "destination": "madurai, rameshwaram, kanyakumari",
+      "price": 18500,
+      "duration": "5 Days / 4 Nights",
+      "category": "Standard Package",
+      "hotelCategory": "3-Star Deluxe",
+      "inclusions": "3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances",
+      "exclusions": "Entry tickets; Lunch & Dinner; Personal expenses",
+      "status": "Active",
+      "id": "PKG-22568"
+    },
+    {
+      "name": "Kerala Tour Package",
+      "destination": "munnar, thekkady, alleppey, cochin",
+      "price": 16500,
+      "duration": "5 Days / 4 Nights",
+      "category": "Standard Package",
+      "hotelCategory": "3-Star Deluxe",
+      "inclusions": "3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances",
+      "exclusions": "Entry tickets; Lunch & Dinner; Personal expenses",
+      "status": "Active",
+      "id": "PKG-35616"
+    },
+    {
+      "name": "Golden Triangle Tour",
+      "destination": "delhi, agra, jaipur",
+      "price": 18000,
+      "duration": "5 Days / 4 Nights",
+      "category": "Standard Package",
+      "hotelCategory": "3-Star Deluxe",
+      "inclusions": "3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances",
+      "exclusions": "Entry tickets; Lunch & Dinner; Personal expenses",
+      "status": "Active",
+      "id": "PKG-63515"
+    },
+    {
+      "name": "South Hill Tour Package",
+      "destination": "mysore, ooty, coorg",
+      "price": 21000,
+      "duration": "6 Days / 5 Nights",
+      "category": "Standard Package",
+      "hotelCategory": "3-Star Deluxe",
+      "inclusions": "3 Star Hotels; Daily Breakfast; Private AC Vehicle; Sightseeing & Transfers; Taxes, Toll, Parking & Driver Allowances",
+      "exclusions": "Entry tickets; Lunch & Dinner; Personal expenses",
+      "status": "Active",
+      "id": "PKG-50165"
+    }
+  ],
+  "bookings": [],
+  "payments": [],
+  "logs": [
+    {
+      "id": "log-1784473896416-745",
+      "timestamp": "2026-07-19T15:11:36.416Z",
+      "username": "admin",
+      "action": "Updated CRM global system settings"
+    },
+    {
+      "id": "log-1784473776890-628",
+      "timestamp": "2026-07-19T15:09:36.890Z",
+      "username": "admin",
+      "action": "Permanently removed package from library: neha@123"
+    },
+    {
+      "id": "log-1784473734660-828",
+      "timestamp": "2026-07-19T15:08:54.660Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-15899"
+    },
+    {
+      "id": "log-1784473675941-915",
+      "timestamp": "2026-07-19T15:07:55.941Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-88235"
+    },
+    {
+      "id": "log-1784473633351-545",
+      "timestamp": "2026-07-19T15:07:13.351Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-48722"
+    },
+    {
+      "id": "log-1784473600867-320",
+      "timestamp": "2026-07-19T15:06:40.867Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-92445"
+    },
+    {
+      "id": "log-1784473504341-327",
+      "timestamp": "2026-07-19T15:05:04.341Z",
+      "username": "malex",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784473390794-205",
+      "timestamp": "2026-07-19T15:03:10.794Z",
+      "username": "Neha",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784473361584-710",
+      "timestamp": "2026-07-19T15:02:41.584Z",
+      "username": "malex",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784473279887-733",
+      "timestamp": "2026-07-19T15:01:19.887Z",
+      "username": "malex",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784473057506-834",
+      "timestamp": "2026-07-19T14:57:37.506Z",
+      "username": "system",
+      "action": "Created new lead: WhatsApp Guest (Ernakulam)"
+    },
+    {
+      "id": "log-1784472735276-544",
+      "timestamp": "2026-07-19T14:52:15.276Z",
+      "username": "system",
+      "action": "Created new lead: sahil Mountaineer (kochi)"
+    },
+    {
+      "id": "log-1784472508711-252",
+      "timestamp": "2026-07-19T14:48:28.711Z",
+      "username": "system",
+      "action": "Created new lead: mahesh (banglore)"
+    },
+    {
+      "id": "log-1784472305057-936",
+      "timestamp": "2026-07-19T14:45:05.057Z",
+      "username": "malex",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784472153166-34",
+      "timestamp": "2026-07-19T14:42:33.166Z",
+      "username": "admin",
+      "action": "Restored full CRM system backup manually"
+    },
+    {
+      "id": "log-1784432934652-836",
+      "timestamp": "2026-07-19T03:48:54.652Z",
+      "username": "system",
+      "action": "Created new lead: abi (hill tour)"
+    },
+    {
+      "id": "log-1784432766659-520",
+      "timestamp": "2026-07-19T03:46:06.659Z",
+      "username": "system",
+      "action": "Created new lead: sundar (munnar)"
+    },
+    {
+      "id": "log-1784432591183-147",
+      "timestamp": "2026-07-19T03:43:11.183Z",
+      "username": "admin",
+      "action": "Permanently deleted customer lead: Amit Patel"
+    },
+    {
+      "id": "log-1784432575665-442",
+      "timestamp": "2026-07-19T03:42:55.665Z",
+      "username": "admin",
+      "action": "Deleted reservation, ledger, and all tied documents for booking: SIH-BK-2026-1001"
+    },
+    {
+      "id": "log-1784432560890-546",
+      "timestamp": "2026-07-19T03:42:40.890Z",
+      "username": "malex",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1784432204469-355",
+      "timestamp": "2026-07-19T03:36:44.469Z",
+      "username": "system",
+      "action": "Created new lead: aanjan (Golden Triangle)"
+    },
+    {
+      "id": "log-1784431872371-926",
+      "timestamp": "2026-07-19T03:31:12.371Z",
+      "username": "admin",
+      "action": "Updated CRM global system settings"
+    },
+    {
+      "id": "log-1784431865837-982",
+      "timestamp": "2026-07-19T03:31:05.837Z",
+      "username": "admin",
+      "action": "Updated CRM global system settings"
+    },
+    {
+      "id": "log-1784431700481-644",
+      "timestamp": "2026-07-19T03:28:20.481Z",
+      "username": "admin",
+      "action": "Updated CRM global system settings"
+    },
+    {
+      "id": "log-1784431597340-271",
+      "timestamp": "2026-07-19T03:26:37.340Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-13017"
+    },
+    {
+      "id": "log-1784431516559-380",
+      "timestamp": "2026-07-19T03:25:16.559Z",
+      "username": "admin",
+      "action": "Permanently removed package from library: 33ABOCS1750P1ZT"
+    },
+    {
+      "id": "log-1784431403544-466",
+      "timestamp": "2026-07-19T03:23:23.544Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-18649"
+    },
+    {
+      "id": "log-1784431379696-560",
+      "timestamp": "2026-07-19T03:22:59.696Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-35714"
+    },
+    {
+      "id": "log-1784431358075-637",
+      "timestamp": "2026-07-19T03:22:38.075Z",
+      "username": "operations",
+      "action": "Created tour guide itinerary plan: ITN-84541"
+    },
+    {
+      "id": "log-1784431290784-333",
+      "timestamp": "2026-07-19T03:21:30.784Z",
+      "username": "system",
+      "action": "Created standard tour package template: Madurai Rameshwaram Kanyakumari Tour"
+    },
+    {
+      "id": "log-1784431290685-275",
+      "timestamp": "2026-07-19T03:21:30.685Z",
+      "username": "system",
+      "action": "Created standard tour package template: neha@123"
+    },
+    {
+      "id": "log-1784431290635-10",
+      "timestamp": "2026-07-19T03:21:30.635Z",
+      "username": "system",
+      "action": "Created standard tour package template: Kerala Tour Package"
+    },
+    {
+      "id": "log-1784431290530-458",
+      "timestamp": "2026-07-19T03:21:30.530Z",
+      "username": "system",
+      "action": "Created standard tour package template: 33ABOCS1750P1ZT"
+    },
+    {
+      "id": "log-1784431290497-789",
+      "timestamp": "2026-07-19T03:21:30.497Z",
+      "username": "system",
+      "action": "Created standard tour package template: Golden Triangle Tour"
+    },
+    {
+      "id": "log-1784431290410-262",
+      "timestamp": "2026-07-19T03:21:30.410Z",
+      "username": "system",
+      "action": "Created standard tour package template: South Hill Tour Package"
+    },
+    {
+      "id": "log-1784431279579-430",
+      "timestamp": "2026-07-19T03:21:19.579Z",
+      "username": "admin",
+      "action": "Permanently removed package from library: Kodaikanal Deluxe Explorer"
+    },
+    {
+      "id": "log-1784431277123-116",
+      "timestamp": "2026-07-19T03:21:17.123Z",
+      "username": "admin",
+      "action": "Permanently removed package from library: Ooty Exotic Honeymoon Getaway"
+    },
+    {
+      "id": "log-1784431275771-629",
+      "timestamp": "2026-07-19T03:21:15.771Z",
+      "username": "admin",
+      "action": "Permanently removed package from library: Munnar Hills & Tea Garden Escape"
+    },
+    {
+      "id": "log-1784431157913-643",
+      "timestamp": "2026-07-19T03:19:17.913Z",
+      "username": "admin",
+      "action": "Logged in successfully from device"
+    },
+    {
+      "id": "log-1",
+      "timestamp": "2026-07-15T08:00:00.000Z",
+      "username": "admin",
+      "action": "System initialized and default database loaded."
+    }
+  ],
+  "whatsappTemplates": [
+    {
+      "id": "wt-1",
+      "name": "Lead Greeting & Welcome",
+      "category": "Leads",
+      "message": "Namaste {customerName},\n\nThank you for contacting South Indian Holidays! 🌴🎒\nWe have received your request for a trip to {destination} on {travelDate} for {adults} adults and {children} children.\n\nOur travel specialist is designing a customized, premium itinerary for you. We will share it with you shortly!\n\nIf you have any special requirements, please reply to this message.\n\nWarm Regards,\n{companyName}\n📞 {companyPhone}\n🌐 {companyWebsite}"
+    },
+    {
+      "id": "wt-2",
+      "name": "Quotation / Package Sharing",
+      "category": "Quotations",
+      "message": "Hello {customerName},\n\nHope you are doing well! ☀️\n\nWe are excited to share our customized tour quotation for your upcoming travel to {destination}:\n📦 Package: {packageName}\n⏳ Duration: {duration}\n💰 Offer Price: ₹{packagePrice} (inclusive of GST)\n🏨 Stays: {hotelCategory}\n\nCheck out the inclusions:\n✨ {inclusions}\n\nPlease reply with your feedback or to request any adjustments. We look forward to hosting you!\n\nWarm Regards,\n{companyName}"
+    },
+    {
+      "id": "wt-3",
+      "name": "Booking Confirmation Summary",
+      "category": "Bookings",
+      "message": "Dear {customerName},\n\nYour booking is CONFIRMED! 🎉✈️\n\nThank you for choosing South Indian Holidays. Here are your booking details:\n🆔 Booking ID: {bookingId}\n📍 Destination: {destination}\n📅 Travel Date: {travelDate}\n👥 Travelers: {adults} Adults, {children} Children\n💰 Total Package Value: ₹{packagePrice}\n✅ Advance Received: ₹{advancePaid}\n⏳ Pending Balance: ₹{balanceAmount}\n\nYour digital vouchers and itinerary details have been locked in. Have a fabulous journey ahead!\n\nRegards,\n{companyName}"
+    },
+    {
+      "id": "wt-4",
+      "name": "Hotel Voucher Sharing",
+      "category": "Vouchers",
+      "message": "Namaste {customerName},\n\nHere are your stay voucher details for {hotelName} in {destination}:\n\n🏨 Hotel: {hotelName}\n📍 Location: {destination}\n📅 Check-in: {checkInDate}\n📅 Check-out: {checkOutDate}\n🛌 Room Type: {roomType}\n🍽️ Meal Plan: {mealPlan}\n🔢 Rooms: {numRooms} | Guests: {numAdults} Adults, {numChildren} Children\n🔑 Confirmation No: {confirmationNumber}\n\nPlease present a copy of this voucher at the reception during check-in. Have a comfortable and memorable stay!\n\nWarm Regards,\n{companyName}"
+    },
+    {
+      "id": "wt-5",
+      "name": "Payment Reminder & Ledger Summary",
+      "category": "Payments",
+      "message": "Dear {customerName},\n\nThis is a gentle reminder regarding the pending balance payment for your upcoming trip to {destination}.\n\n💳 Total Amount: ₹{totalAmount}\n✅ Advance Received: ₹{advancePaid}\n⚠️ Pending Balance: ₹{balanceAmount}\n\nPlease process the remittance of ₹{balanceAmount} using any of the following coordinates:\n🏦 Bank: {bankName}\n🔢 Account No: {bankAccount}\n🔑 IFSC Code: {bankIfsc}\n📱 UPI ID: {upiId}\n\nOnce paid, please share a screenshot of the receipt here. Thank you for your cooperation!\n\nBest Regards,\n{companyName}"
+    },
+    {
+      "id": "wt-6",
+      "name": "Cab & Driver Detail Notification",
+      "category": "Fleet",
+      "message": "Hello {customerName},\n\nYour private cab and driver details for your tour of {destination} have been assigned:\n\n🚗 Vehicle: {vehicleType}\n🔢 Vehicle No: {vehicleNo}\n👨🏻‍✈️ Driver Name: {driverName}\n📞 Driver Contact: {driverMobile}\n\nOur professional driver will greet you at the arrival point. Please contact him or our operations desk if you need any assistance.\n\nWish you a safe and scenic drive!\n\nBest Regards,\n{companyName}"
+    },
+    {
+      "id": "wt-7",
+      "name": "Welcome Back & Feedback Survey",
+      "category": "Other",
+      "message": "Welcome back, {customerName}! 🌸🏠\n\nWe hope you had an extraordinary and comfortable experience during your {destination} tour with us!\n\nWe would highly appreciate it if you could spare 2 minutes to share your feedback or rate our services. It helps us improve our customer experience!\n\nLooking forward to planning your next vacation soon.\n\nBest Regards,\n{companyName}"
+    }
+  ],
+  "whatsappLogs": [
+    {
+      "id": "wl-1",
+      "timestamp": "2026-07-15T09:30:00.000Z",
+      "customerName": "Amit Patel",
+      "mobile": "9876543210",
+      "templateName": "Lead Greeting & Welcome",
+      "messageText": "Namaste Amit Patel,\n\nThank you for contacting South Indian Holidays...",
+      "sentBy": "admin"
+    }
+  ],
+  "whatsappConversations": [
+    {
+      "id": "conv-amit",
+      "customerName": "Amit Patel",
+      "mobile": "9876543210",
+      "unreadCount": 0,
+      "assignedTo": "admin",
+      "lastMessage": "Is breakfast buffet included?",
+      "lastTimestamp": "2026-07-15T11:45:00.000Z"
+    },
+    {
+      "id": "conv-priya",
+      "customerName": "Priya Sharma",
+      "mobile": "9443312345",
+      "unreadCount": 0,
+      "assignedTo": "sales",
+      "lastMessage": "Thank you for the prompt update! Vouchers received.",
+      "lastTimestamp": "2026-07-15T09:30:00.000Z"
+    }
+  ],
+  "whatsappMessages": [
+    {
+      "id": "msg-1",
+      "conversationId": "conv-amit",
+      "sender": "customer",
+      "senderName": "Amit Patel",
+      "text": "Namaste! I am interested in booking the Kodaikanal Deluxe Explorer package for 3 people.",
+      "timestamp": "2026-07-14T10:00:00.000Z"
+    },
+    {
+      "id": "msg-2",
+      "conversationId": "conv-amit",
+      "sender": "agent",
+      "senderName": "Super Admin",
+      "text": "Namaste Amit ji! Thank you for contacting South Indian Holidays. Here is the customized package details.",
+      "timestamp": "2026-07-14T10:15:00.000Z"
+    },
+    {
+      "id": "msg-3",
+      "conversationId": "conv-amit",
+      "sender": "agent",
+      "senderName": "Super Admin",
+      "text": "Here is the PDF quotation for your review.",
+      "attachmentUrl": "/api/quotations/SIH-QT-1001/pdf",
+      "attachmentType": "pdf",
+      "timestamp": "2026-07-14T11:00:00.000Z"
+    },
+    {
+      "id": "msg-4",
+      "conversationId": "conv-amit",
+      "sender": "customer",
+      "senderName": "Amit Patel",
+      "text": "Looks perfect! I've paid the advance of ₹10,000.",
+      "timestamp": "2026-07-14T14:30:00.000Z"
+    },
+    {
+      "id": "msg-5",
+      "conversationId": "conv-amit",
+      "sender": "customer",
+      "senderName": "Amit Patel",
+      "text": "When can we expect driver assignment?",
+      "timestamp": "2026-07-15T11:40:00.000Z"
+    },
+    {
+      "id": "msg-6",
+      "conversationId": "conv-amit",
+      "sender": "customer",
+      "senderName": "Amit Patel",
+      "text": "Is breakfast buffet included?",
+      "timestamp": "2026-07-15T11:45:00.000Z"
+    },
+    {
+      "id": "msg-7",
+      "conversationId": "conv-priya",
+      "sender": "customer",
+      "senderName": "Priya Sharma",
+      "text": "Hi Priya here, can you send the Ooty stay voucher?",
+      "timestamp": "2026-07-15T08:00:00.000Z"
+    },
+    {
+      "id": "msg-8",
+      "conversationId": "conv-priya",
+      "sender": "agent",
+      "senderName": "sales",
+      "text": "Hi Priya! Sending you the hotel stay voucher PDF file.",
+      "attachmentUrl": "/api/vouchers/SIH-VC-1001/pdf",
+      "attachmentType": "pdf",
+      "timestamp": "2026-07-15T09:00:00.000Z"
+    },
+    {
+      "id": "msg-9",
+      "conversationId": "conv-priya",
+      "sender": "customer",
+      "senderName": "Priya Sharma",
+      "text": "Thank you for the prompt update! Vouchers received.",
+      "timestamp": "2026-07-15T09:30:00.000Z"
+    }
+  ]
+}
