@@ -4,32 +4,28 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
-import { Pool } from "pg";
+import pg from "pg";
+import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+
+// Load environment variables from .env file
+dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure directories exist
+const DATA_DIR = path.join(process.cwd(), "data");
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-// Postgres connection pool — this replaces the old flat-file data/db.json store.
-// Supabase (and most managed Postgres providers) require SSL; rejectUnauthorized
-// is disabled here because these providers use certificates not in Node's default
-// trust store — this matches Supabase's own documented connection instructions.
-if (!process.env.DATABASE_URL) {
-  console.error("FATAL: DATABASE_URL environment variable is not set. The server cannot start without a database connection.");
-  process.exit(1);
-}
-const pgPool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false }
-});
+const DB_PATH = path.join(DATA_DIR, "db.json");
 
 // Multer Config
 const storage = multer.diskStorage({
@@ -72,15 +68,6 @@ const INITIAL_DB = {
     invoicePrefix: "SIH-INV-",
     taxRate: 5
   },
-  destinations: [
-    { id: "DEST-001", name: "Kodaikanal", value: "kodaikanal", status: "Active" },
-    { id: "DEST-002", name: "Ooty", value: "ooty", status: "Active" },
-    { id: "DEST-003", name: "Coorg", value: "coorg", status: "Active" },
-    { id: "DEST-004", name: "Munnar Hills", value: "munnar", status: "Active" },
-    { id: "DEST-005", name: "Mysore", value: "mysore", status: "Active" },
-    { id: "DEST-006", name: "Alleppey Houseboats", value: "alleppey", status: "Active" },
-    { id: "DEST-007", name: "Pondicherry", value: "pondicherry", status: "Active" }
-  ],
   vouchers: [
     {
       id: "HBV-00001",
@@ -423,104 +410,2412 @@ const INITIAL_DB = {
 // Database state accessor
 let db = { ...INITIAL_DB };
 
-async function readDb() {
-  const maxAttempts = 5;
-  let lastErr: any = null;
+const { Pool } = pg;
+let pool: any = null;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+const dbUrl = process.env.DATABASE_URL;
+if (dbUrl && !dbUrl.includes("hidden") && !dbUrl.includes("placeholder") && !dbUrl.includes("MY_DATABASE_URL") && (dbUrl.startsWith("postgresql://") || dbUrl.startsWith("postgres://"))) {
+  try {
+    // Dynamic SSL determination based on connection target
+    let sslConfig: any = false;
+    if (!dbUrl.includes("localhost") && !dbUrl.includes("127.0.0.1")) {
+      if (dbUrl.includes("sslmode=disable")) {
+        sslConfig = false;
+      } else {
+        sslConfig = { rejectUnauthorized: false };
+      }
+    }
+
+    pool = new Pool({
+      connectionString: dbUrl,
+      max: process.env.DB_POOL_MAX ? parseInt(process.env.DB_POOL_MAX, 10) : 10,
+      idleTimeoutMillis: process.env.DB_IDLE_TIMEOUT ? parseInt(process.env.DB_IDLE_TIMEOUT, 10) : 30000,
+      connectionTimeoutMillis: process.env.DB_CONN_TIMEOUT ? parseInt(process.env.DB_CONN_TIMEOUT, 10) : 10000,
+      ssl: sslConfig,
+    });
+
+    // CRITICAL: Register an error handler on the idle pool clients to prevent unhandled process crashes
+    pool.on("error", (err: any) => {
+      console.error("Unexpected idle client error in PostgreSQL pool:", err.message || err);
+    });
+
+    console.log("PostgreSQL connection pool initialized with DATABASE_URL (SSL Mode: " + (sslConfig ? "Enabled" : "Disabled") + ")");
+  } catch (poolErr: any) {
+    console.error("Failed to initialize PostgreSQL pool:", poolErr.message || poolErr);
+  }
+} else {
+  console.log("No valid DATABASE_URL found. Running in local JSON file-db fallback mode.");
+}
+
+// Redact database passwords from logged error messages or connection strings
+function redactSecrets(message: string): string {
+  return message.replace(/postgres(?:ql)?:\/\/([^:]+):([^@]+)@/, "postgresql://$1:****@");
+}
+
+async function syncWithPostgres() {
+  if (!pool) return;
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      await pgPool.query(`
-        CREATE TABLE IF NOT EXISTS crm_state (
+      console.log(`Connecting to PostgreSQL database to sync data (attempt ${attempt}/5)...`);
+      
+      // Ensure the table exists with id as PRIMARY KEY
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS crm_database (
           id INT PRIMARY KEY,
           data JSONB NOT NULL,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
       `);
-
-      const result = await pgPool.query("SELECT data FROM crm_state WHERE id = 1");
-      let loadedDb: any = result.rows.length > 0 ? result.rows[0].data : null;
-      const isFirstBoot = result.rows.length === 0;
-
-      if (!loadedDb || typeof loadedDb !== "object") {
-        loadedDb = JSON.parse(JSON.stringify(INITIAL_DB));
+      
+      // Try to read the database state
+      const result = await pool.query("SELECT data FROM crm_database ORDER BY id DESC LIMIT 1");
+      if (result.rows.length > 0) {
+        const pgDb = result.rows[0].data;
+        if (pgDb && typeof pgDb === "object") {
+          db = { ...db, ...pgDb };
+          // Save locally as fallback
+          fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+          console.log("Successfully loaded latest CRM state from PostgreSQL database and updated local cache");
+          return;
+        }
+      } else {
+        // If empty, seed initial state
+        await pool.query("INSERT INTO crm_database (id, data) VALUES (1, $1)", [JSON.stringify(db)]);
+        console.log("Seeded empty PostgreSQL database with initial data state");
+        return;
+      }
+    } catch (err: any) {
+      let classification = "General Database Error";
+      if (err.code === "28P01" || err.code === "28000") {
+        classification = "Database Authentication Failure (Verify credentials)";
+      } else if (err.code === "ENOTFOUND") {
+        classification = "Database DNS Hostname Resolution Failure (Host is unreachable)";
+      } else if (err.code === "ECONNREFUSED") {
+        classification = "Database Connection Refused (Server offline or port mismatched)";
+      } else if (err.code === "ETIMEDOUT" || err.message?.includes("timeout")) {
+        classification = "Database Connection Timeout (Network lag or firewall blocks)";
+      } else if (err.message?.includes("SSL") || err.message?.includes("protocol")) {
+        classification = "Database SSL/TLS Handshake Failure";
       }
 
-      db = loadedDb;
-      let updated = isFirstBoot;
+      console.error(`[DATABASE-SYNC-ERROR] Attempt ${attempt}/5 failed: ${classification}`);
+      console.error(`Reason (redacted): ${err.code || "N/A"} - ${redactSecrets(err.message || String(err))}`);
+      
+      if (attempt === 5) {
+        console.error("Exceeded maximum database sync attempts. Safely continuing with local JSON database state.");
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+  }
+}
 
-      // Upgrade database schema dynamically with fallback default values and type enforcement
-      const keys = Object.keys(INITIAL_DB) as Array<keyof typeof INITIAL_DB>;
-      for (const key of keys) {
-        const initialVal = INITIAL_DB[key];
-        const currentVal = db[key];
+async function initializeRelationalTables() {
+  if (!pool) return;
+  try {
+    console.log("Initializing normalized relational tables in PostgreSQL...");
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(255) PRIMARY KEY,
+        full_name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(100),
+        email VARCHAR(255),
+        username VARCHAR(100) NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(100) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Active',
+        last_login VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-        if (currentVal === undefined || currentVal === null) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(100) NOT NULL,
+        email VARCHAR(255),
+        destination VARCHAR(255) NOT NULL,
+        travel_date VARCHAR(100),
+        adults INT DEFAULT 2,
+        children INT DEFAULT 0,
+        budget NUMERIC(15, 2),
+        notes TEXT,
+        status VARCHAR(100) NOT NULL,
+        priority VARCHAR(50) DEFAULT 'Medium',
+        assigned_to VARCHAR(255),
+        source VARCHAR(100),
+        tags TEXT[],
+        documents JSONB DEFAULT '[]',
+        timeline JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS followups (
+        id VARCHAR(255) PRIMARY KEY,
+        date VARCHAR(100) NOT NULL,
+        time VARCHAR(100),
+        type VARCHAR(100) NOT NULL,
+        priority VARCHAR(50) DEFAULT 'Medium',
+        remarks TEXT,
+        assigned_to VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Pending',
+        completion_date VARCHAR(100),
+        completion_time VARCHAR(100),
+        lead_id VARCHAR(255) REFERENCES leads(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tour_packages (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        destination VARCHAR(255) NOT NULL,
+        duration VARCHAR(255) NOT NULL,
+        category VARCHAR(100),
+        price NUMERIC(15, 2) NOT NULL,
+        hotel_category VARCHAR(100),
+        inclusions TEXT,
+        exclusions TEXT,
+        status VARCHAR(50) DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id VARCHAR(255) PRIMARY KEY,
+        lead_id VARCHAR(255) REFERENCES leads(id) ON DELETE SET NULL,
+        customer_id VARCHAR(255) NOT NULL,
+        customer_name VARCHAR(255) NOT NULL,
+        customer_mobile VARCHAR(100) NOT NULL,
+        customer_email VARCHAR(255),
+        destination VARCHAR(255) NOT NULL,
+        travel_date VARCHAR(100) NOT NULL,
+        adults INT DEFAULT 2,
+        children INT DEFAULT 0,
+        package_price NUMERIC(15, 2) NOT NULL,
+        hotel_details TEXT,
+        driver_details TEXT,
+        status VARCHAR(100) NOT NULL,
+        timeline JSONB DEFAULT '[]',
+        documents JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hotel_vouchers (
+        id VARCHAR(255) PRIMARY KEY,
+        booking_id VARCHAR(255) REFERENCES bookings(id) ON DELETE CASCADE,
+        customer_id VARCHAR(255) NOT NULL,
+        guest_name VARCHAR(255) NOT NULL,
+        guest_mobile VARCHAR(100) NOT NULL,
+        guest_email VARCHAR(255),
+        hotel_name VARCHAR(255) NOT NULL,
+        hotel_address TEXT,
+        hotel_phone VARCHAR(100),
+        hotel_email VARCHAR(255),
+        hotel_contact_person VARCHAR(255),
+        destination VARCHAR(255) NOT NULL,
+        check_in_date VARCHAR(100) NOT NULL,
+        check_out_date VARCHAR(100) NOT NULL,
+        num_nights INT DEFAULT 1,
+        num_rooms INT DEFAULT 1,
+        room_type VARCHAR(100),
+        meal_plan VARCHAR(100),
+        num_adults INT DEFAULT 2,
+        num_children INT DEFAULT 0,
+        num_infants INT DEFAULT 0,
+        confirmation_number VARCHAR(255),
+        booking_status VARCHAR(100) DEFAULT 'Confirmed',
+        booking_date VARCHAR(100),
+        voucher_date VARCHAR(100),
+        supplier_name VARCHAR(255),
+        supplier_contact VARCHAR(100),
+        total_amount NUMERIC(15, 2) DEFAULT 0,
+        advance_paid NUMERIC(15, 2) DEFAULT 0,
+        balance_amount NUMERIC(15, 2) DEFAULT 0,
+        payment_status VARCHAR(50) DEFAULT 'Unpaid',
+        special_requests TEXT,
+        billing_instructions TEXT,
+        remarks TEXT,
+        internal_notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS itineraries (
+        id VARCHAR(255) PRIMARY KEY,
+        booking_id VARCHAR(255) REFERENCES bookings(id) ON DELETE CASCADE,
+        customer_name VARCHAR(255) NOT NULL,
+        booking_number VARCHAR(100) NOT NULL,
+        destination VARCHAR(255) NOT NULL,
+        travel_date VARCHAR(100) NOT NULL,
+        days JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS payment_ledgers (
+        id VARCHAR(255) PRIMARY KEY,
+        booking_id VARCHAR(255) UNIQUE REFERENCES bookings(id) ON DELETE CASCADE,
+        customer_name VARCHAR(255) NOT NULL,
+        total_amount NUMERIC(15, 2) DEFAULT 0,
+        advance_paid NUMERIC(15, 2) DEFAULT 0,
+        balance_amount NUMERIC(15, 2) DEFAULT 0,
+        status VARCHAR(50) DEFAULT 'Unpaid',
+        installments JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS expenses (
+        id VARCHAR(255) PRIMARY KEY,
+        description TEXT NOT NULL,
+        amount NUMERIC(15, 2) NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        date VARCHAR(100) NOT NULL,
+        approved_by VARCHAR(255) NOT NULL,
+        receipt_url TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hotels (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        destination VARCHAR(255) NOT NULL,
+        rating VARCHAR(50),
+        contact_person VARCHAR(255),
+        contact_phone VARCHAR(100),
+        room_type VARCHAR(100),
+        contract_rate NUMERIC(15, 2) DEFAULT 0,
+        available_rooms INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS drivers (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(100) NOT NULL,
+        vehicle_type VARCHAR(100),
+        vehicle_no VARCHAR(100),
+        status VARCHAR(100) DEFAULT 'Available',
+        rating VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS suppliers (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(100) NOT NULL,
+        contact_person VARCHAR(255),
+        contact_phone VARCHAR(100),
+        email VARCHAR(255),
+        rating VARCHAR(50),
+        balance_due NUMERIC(15, 2) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        id INT PRIMARY KEY DEFAULT 1,
+        company_name VARCHAR(255) NOT NULL,
+        gst_number VARCHAR(100),
+        address TEXT,
+        phone VARCHAR(100),
+        email VARCHAR(255),
+        bank_name VARCHAR(255),
+        bank_account VARCHAR(100),
+        bank_ifsc VARCHAR(100),
+        upi_id VARCHAR(255),
+        website VARCHAR(255),
+        logo TEXT,
+        quotation_prefix VARCHAR(50) DEFAULT 'SIH-QT-',
+        voucher_prefix VARCHAR(50) DEFAULT 'SIH-VC-',
+        invoice_prefix VARCHAR(50) DEFAULT 'SIH-INV-',
+        tax_rate NUMERIC(5, 2) DEFAULT 5.00,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS activity_logs (
+        id VARCHAR(255) PRIMARY KEY,
+        timestamp VARCHAR(100) NOT NULL,
+        username VARCHAR(100) NOT NULL,
+        action TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_conversations (
+        id VARCHAR(255) PRIMARY KEY,
+        customer_name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(100) UNIQUE NOT NULL,
+        unread_count INT DEFAULT 0,
+        assigned_to VARCHAR(255),
+        last_message TEXT,
+        last_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_messages (
+        id VARCHAR(255) PRIMARY KEY,
+        conversation_id VARCHAR(255) REFERENCES whatsapp_conversations(id) ON DELETE CASCADE,
+        sender VARCHAR(50) NOT NULL,
+        sender_name VARCHAR(255),
+        text TEXT,
+        attachment_url TEXT,
+        attachment_type VARCHAR(50),
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quotations (
+        id VARCHAR(255) PRIMARY KEY,
+        customer_name VARCHAR(255) NOT NULL,
+        customer_phone VARCHAR(100) NOT NULL,
+        customer_email VARCHAR(255),
+        pickup_city VARCHAR(255) DEFAULT 'Coimbatore',
+        destination VARCHAR(255) NOT NULL,
+        travel_date VARCHAR(100),
+        num_days INT DEFAULT 3,
+        adults INT DEFAULT 2,
+        children INT DEFAULT 0,
+        discount_percent NUMERIC(5, 2) DEFAULT 0.00,
+        terms_index INT DEFAULT 0,
+        vehicle_details TEXT,
+        hotel_details TEXT,
+        day_wise_itinerary TEXT,
+        status VARCHAR(100) DEFAULT 'Draft',
+        quotation_number VARCHAR(100) UNIQUE,
+        pdf_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quotation_items (
+        id VARCHAR(255) PRIMARY KEY,
+        quotation_id VARCHAR(255) REFERENCES quotations(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        hsn VARCHAR(100) DEFAULT '9985',
+        qty INT DEFAULT 1,
+        rate NUMERIC(15, 2) NOT NULL,
+        gst NUMERIC(5, 2) DEFAULT 5.00
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_templates (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(100),
+        message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_logs (
+        id VARCHAR(255) PRIMARY KEY,
+        timestamp VARCHAR(100) NOT NULL,
+        customer_name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(100) NOT NULL,
+        template_name VARCHAR(255) NOT NULL,
+        message_text TEXT NOT NULL,
+        sent_by VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_followups_date ON followups(date)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_mobile ON whatsapp_conversations(mobile)");
+
+    console.log("Successfully initialized/verified all 20 normalized relational database tables!");
+  } catch (err: any) {
+    console.error("[SCHEMA-INIT-ERROR] Failed to initialize relational tables:", redactSecrets(err.message || String(err)));
+  }
+}
+
+async function syncRelationalDatabase() {
+  if (!pool) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    
+    // 1. Sync users
+    if (Array.isArray(db.users)) {
+      for (const u of db.users) {
+        await client.query(`
+          INSERT INTO users (id, full_name, mobile, email, username, password, role, status, last_login)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (id) DO UPDATE SET
+            full_name = EXCLUDED.full_name,
+            mobile = EXCLUDED.mobile,
+            email = EXCLUDED.email,
+            username = EXCLUDED.username,
+            password = EXCLUDED.password,
+            role = EXCLUDED.role,
+            status = EXCLUDED.status,
+            last_login = EXCLUDED.last_login,
+            updated_at = CURRENT_TIMESTAMP
+        `, [u.id, u.fullName, u.mobile || null, u.email || null, u.username, u.password, u.role, u.status || "Active", u.lastLogin]);
+      }
+    }
+
+    // 2. Sync leads & followups
+    if (Array.isArray(db.leads)) {
+      for (const l of db.leads) {
+        const adultsVal = typeof l.adults === "number" ? l.adults : parseInt(l.adults, 10) || 2;
+        const childrenVal = typeof l.children === "number" ? l.children : parseInt(l.children, 10) || 0;
+        await client.query(`
+          INSERT INTO leads (id, name, mobile, email, destination, travel_date, adults, children, budget, notes, status, priority, assigned_to, source, tags, documents, timeline)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            mobile = EXCLUDED.mobile,
+            email = EXCLUDED.email,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            adults = EXCLUDED.adults,
+            children = EXCLUDED.children,
+            budget = EXCLUDED.budget,
+            notes = EXCLUDED.notes,
+            status = EXCLUDED.status,
+            priority = EXCLUDED.priority,
+            assigned_to = EXCLUDED.assigned_to,
+            source = EXCLUDED.source,
+            tags = EXCLUDED.tags,
+            documents = EXCLUDED.documents,
+            timeline = EXCLUDED.timeline,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          l.id, l.name, l.mobile, l.email || null, l.destination, l.travelDate || null,
+          adultsVal, childrenVal, l.budget || null, l.notes || "", l.status, l.priority || "Medium",
+          l.assignedTo || null, l.source || null, l.tags || [],
+          JSON.stringify(l.documents || []), JSON.stringify(l.timeline || [])
+        ]);
+
+        const fuHistory = Array.isArray(l.followUpHistory) ? l.followUpHistory : [];
+        for (const fu of fuHistory) {
+          const fuId = fu.id || `fu-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+          await client.query(`
+            INSERT INTO followups (id, date, time, type, priority, remarks, assigned_to, status, completion_date, completion_time, lead_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+              date = EXCLUDED.date,
+              time = EXCLUDED.time,
+              type = EXCLUDED.type,
+              priority = EXCLUDED.priority,
+              remarks = EXCLUDED.remarks,
+              assigned_to = EXCLUDED.assigned_to,
+              status = EXCLUDED.status,
+              completion_date = EXCLUDED.completion_date,
+              completion_time = EXCLUDED.completion_time,
+              lead_id = EXCLUDED.lead_id,
+              updated_at = CURRENT_TIMESTAMP
+          `, [
+            fuId, fu.date, fu.time || null, fu.type, fu.priority || "Medium",
+            fu.remarks || fu.notes || "", fu.assignedTo || fu.staff || "", fu.status || "Pending",
+            fu.completionDate || null, fu.completionTime || null, l.id
+          ]);
+        }
+      }
+    }
+
+    // 3. Sync packages (db.packages)
+    if (Array.isArray(db.packages)) {
+      for (const p of db.packages) {
+        await client.query(`
+          INSERT INTO tour_packages (id, name, destination, duration, category, price, hotel_category, inclusions, exclusions, status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            destination = EXCLUDED.destination,
+            duration = EXCLUDED.duration,
+            category = EXCLUDED.category,
+            price = EXCLUDED.price,
+            hotel_category = EXCLUDED.hotel_category,
+            inclusions = EXCLUDED.inclusions,
+            exclusions = EXCLUDED.exclusions,
+            status = EXCLUDED.status,
+            updated_at = CURRENT_TIMESTAMP
+        `, [p.id, p.name, p.destination, p.duration, p.category || null, p.price, p.hotelCategory || null, p.inclusions || "", p.exclusions || "", p.status || "Active"]);
+      }
+    }
+
+    // 4. Sync bookings
+    if (Array.isArray(db.bookings)) {
+      for (const b of db.bookings) {
+        const adultsVal = typeof b.adults === "number" ? b.adults : parseInt(b.adults, 10) || 2;
+        const childrenVal = typeof b.children === "number" ? b.children : parseInt(b.children, 10) || 0;
+        await client.query(`
+          INSERT INTO bookings (id, lead_id, customer_id, customer_name, customer_mobile, customer_email, destination, travel_date, adults, children, package_price, hotel_details, driver_details, status, timeline, documents)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          ON CONFLICT (id) DO UPDATE SET
+            lead_id = EXCLUDED.lead_id,
+            customer_id = EXCLUDED.customer_id,
+            customer_name = EXCLUDED.customer_name,
+            customer_mobile = EXCLUDED.customer_mobile,
+            customer_email = EXCLUDED.customer_email,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            adults = EXCLUDED.adults,
+            children = EXCLUDED.children,
+            package_price = EXCLUDED.package_price,
+            hotel_details = EXCLUDED.hotel_details,
+            driver_details = EXCLUDED.driver_details,
+            status = EXCLUDED.status,
+            timeline = EXCLUDED.timeline,
+            documents = EXCLUDED.documents,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          b.id, b.leadId || null, b.customerId, b.customerName, b.customerMobile, b.customerEmail || null,
+          b.destination, b.travelDate, adultsVal, childrenVal,
+          b.packagePrice || 0, b.hotelDetails || "", b.driverDetails || "", b.status,
+          JSON.stringify(b.timeline || []), JSON.stringify(b.documents || [])
+        ]);
+      }
+    }
+
+    // 5. Sync hotel_vouchers (db.vouchers)
+    if (Array.isArray(db.vouchers)) {
+      for (const v of db.vouchers) {
+        const nightsVal = typeof v.numNights === "number" ? v.numNights : parseInt(v.numNights, 10) || 1;
+        const roomsVal = typeof v.numRooms === "number" ? v.numRooms : parseInt(v.numRooms, 10) || 1;
+        const adultsVal = typeof v.numAdults === "number" ? v.numAdults : parseInt(v.numAdults, 10) || 2;
+        const childrenVal = typeof v.numChildren === "number" ? v.numChildren : parseInt(v.numChildren, 10) || 0;
+        const infantsVal = typeof v.numInfants === "number" ? v.numInfants : parseInt(v.numInfants, 10) || 0;
+        await client.query(`
+          INSERT INTO hotel_vouchers (id, booking_id, customer_id, guest_name, guest_mobile, guest_email, hotel_name, hotel_address, hotel_phone, hotel_email, hotel_contact_person, destination, check_in_date, check_out_date, num_nights, num_rooms, room_type, meal_plan, num_adults, num_children, num_infants, confirmation_number, booking_status, booking_date, voucher_date, supplier_name, supplier_contact, total_amount, advance_paid, balance_amount, payment_status, special_requests, billing_instructions, remarks, internal_notes)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+          ON CONFLICT (id) DO UPDATE SET
+            booking_id = EXCLUDED.booking_id,
+            customer_id = EXCLUDED.customer_id,
+            guest_name = EXCLUDED.guest_name,
+            guest_mobile = EXCLUDED.guest_mobile,
+            guest_email = EXCLUDED.guest_email,
+            hotel_name = EXCLUDED.hotel_name,
+            hotel_address = EXCLUDED.hotel_address,
+            hotel_phone = EXCLUDED.hotel_phone,
+            hotel_email = EXCLUDED.hotel_email,
+            hotel_contact_person = EXCLUDED.hotel_contact_person,
+            destination = EXCLUDED.destination,
+            check_in_date = EXCLUDED.check_in_date,
+            check_out_date = EXCLUDED.check_out_date,
+            num_nights = EXCLUDED.num_nights,
+            num_rooms = EXCLUDED.num_rooms,
+            room_type = EXCLUDED.room_type,
+            meal_plan = EXCLUDED.meal_plan,
+            num_adults = EXCLUDED.num_adults,
+            num_children = EXCLUDED.num_children,
+            num_infants = EXCLUDED.num_infants,
+            confirmation_number = EXCLUDED.confirmation_number,
+            booking_status = EXCLUDED.booking_status,
+            booking_date = EXCLUDED.booking_date,
+            voucher_date = EXCLUDED.voucher_date,
+            supplier_name = EXCLUDED.supplier_name,
+            supplier_contact = EXCLUDED.supplier_contact,
+            total_amount = EXCLUDED.total_amount,
+            advance_paid = EXCLUDED.advance_paid,
+            balance_amount = EXCLUDED.balance_amount,
+            payment_status = EXCLUDED.payment_status,
+            special_requests = EXCLUDED.special_requests,
+            billing_instructions = EXCLUDED.billing_instructions,
+            remarks = EXCLUDED.remarks,
+            internal_notes = EXCLUDED.internal_notes,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          v.id, v.bookingId, v.customerId, v.guestName, v.guestMobile, v.guestEmail || null,
+          v.hotelName, v.hotelAddress || "", v.hotelPhone || null, v.hotelEmail || null, v.hotelContactPerson || null,
+          v.destination, v.checkInDate, v.checkOutDate, nightsVal, roomsVal,
+          v.roomType || null, v.mealPlan || null, adultsVal, childrenVal, infantsVal,
+          v.confirmationNumber || null, v.bookingStatus || 'Confirmed', v.bookingDate || null, v.voucherDate || null,
+          v.supplierName || null, v.supplierContact || null, v.totalAmount || 0, v.advancePaid || 0, v.balanceAmount || 0,
+          v.paymentStatus || 'Unpaid', v.specialRequests || null, v.billingInstructions || null, v.remarks || null, v.internalNotes || null
+        ]);
+      }
+    }
+
+    // 6. Sync itineraries
+    if (Array.isArray(db.itineraries)) {
+      for (const it of db.itineraries) {
+        await client.query(`
+          INSERT INTO itineraries (id, booking_id, customer_name, booking_number, destination, travel_date, days)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            booking_id = EXCLUDED.booking_id,
+            customer_name = EXCLUDED.customer_name,
+            booking_number = EXCLUDED.booking_number,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            days = EXCLUDED.days,
+            updated_at = CURRENT_TIMESTAMP
+        `, [it.id, it.bookingId, it.customerName, it.bookingNumber || it.bookingId, it.destination, it.travelDate, JSON.stringify(it.days || [])]);
+      }
+    }
+
+    // 7. Sync payment_ledgers (db.payments)
+    if (Array.isArray(db.payments)) {
+      for (const py of db.payments) {
+        await client.query(`
+          INSERT INTO payment_ledgers (id, booking_id, customer_name, total_amount, advance_paid, balance_amount, status, installments)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (id) DO UPDATE SET
+            booking_id = EXCLUDED.booking_id,
+            customer_name = EXCLUDED.customer_name,
+            total_amount = EXCLUDED.total_amount,
+            advance_paid = EXCLUDED.advance_paid,
+            balance_amount = EXCLUDED.balance_amount,
+            status = EXCLUDED.status,
+            installments = EXCLUDED.installments,
+            updated_at = CURRENT_TIMESTAMP
+        `, [py.id, py.bookingId, py.customerName, py.totalAmount || 0, py.advancePaid || 0, py.balanceAmount || 0, py.status || 'Unpaid', JSON.stringify(py.installments || [])]);
+      }
+    }
+
+    // 8. Sync expenses
+    if (Array.isArray(db.expenses)) {
+      for (const ex of db.expenses) {
+        await client.query(`
+          INSERT INTO expenses (id, description, amount, category, date, approved_by, receipt_url)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            description = EXCLUDED.description,
+            amount = EXCLUDED.amount,
+            category = EXCLUDED.category,
+            date = EXCLUDED.date,
+            approved_by = EXCLUDED.approved_by,
+            receipt_url = EXCLUDED.receipt_url,
+            updated_at = CURRENT_TIMESTAMP
+        `, [ex.id, ex.description, ex.amount, ex.category, ex.date, ex.approvedBy, ex.receiptUrl || null]);
+      }
+    }
+
+    // 9. Sync hotels
+    if (Array.isArray(db.hotels)) {
+      for (const h of db.hotels) {
+        await client.query(`
+          INSERT INTO hotels (id, name, destination, rating, contact_person, contact_phone, room_type, contract_rate, available_rooms)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            destination = EXCLUDED.destination,
+            rating = EXCLUDED.rating,
+            contact_person = EXCLUDED.contact_person,
+            contact_phone = EXCLUDED.contact_phone,
+            room_type = EXCLUDED.room_type,
+            contract_rate = EXCLUDED.contract_rate,
+            available_rooms = EXCLUDED.available_rooms,
+            updated_at = CURRENT_TIMESTAMP
+        `, [h.id, h.name, h.destination, h.rating || null, h.contactPerson || null, h.contactPhone || null, h.roomType || null, h.contractRate || 0, h.availableRooms || 0]);
+      }
+    }
+
+    // 10. Sync drivers
+    if (Array.isArray(db.drivers)) {
+      for (const d of db.drivers) {
+        await client.query(`
+          INSERT INTO drivers (id, name, mobile, vehicle_type, vehicle_no, status, rating)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            mobile = EXCLUDED.mobile,
+            vehicle_type = EXCLUDED.vehicle_type,
+            vehicle_no = EXCLUDED.vehicle_no,
+            status = EXCLUDED.status,
+            rating = EXCLUDED.rating,
+            updated_at = CURRENT_TIMESTAMP
+        `, [d.id, d.name, d.mobile, d.vehicleType || null, d.vehicleNo || null, d.status || 'Available', d.rating || null]);
+      }
+    }
+
+    // 11. Sync suppliers
+    if (Array.isArray(db.suppliers)) {
+      for (const s of db.suppliers) {
+        await client.query(`
+          INSERT INTO suppliers (id, name, type, contact_person, contact_phone, email, rating, balance_due)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            type = EXCLUDED.type,
+            contact_person = EXCLUDED.contact_person,
+            contact_phone = EXCLUDED.contact_phone,
+            email = EXCLUDED.email,
+            rating = EXCLUDED.rating,
+            balance_due = EXCLUDED.balance_due,
+            updated_at = CURRENT_TIMESTAMP
+        `, [s.id, s.name, s.type, s.contactPerson || null, s.contactPhone || null, s.email || null, s.rating || null, s.balanceDue || 0]);
+      }
+    }
+
+    // 12. Sync settings
+    if (db.settings) {
+      await client.query(`
+        INSERT INTO settings (id, company_name, gst_number, address, phone, email, bank_name, bank_account, bank_ifsc, upi_id, website, logo, quotation_prefix, voucher_prefix, invoice_prefix, tax_rate)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (id) DO UPDATE SET
+          company_name = EXCLUDED.company_name,
+          gst_number = EXCLUDED.gst_number,
+          address = EXCLUDED.address,
+          phone = EXCLUDED.phone,
+          email = EXCLUDED.email,
+          bank_name = EXCLUDED.bank_name,
+          bank_account = EXCLUDED.bank_account,
+          bank_ifsc = EXCLUDED.bank_ifsc,
+          upi_id = EXCLUDED.upi_id,
+          website = EXCLUDED.website,
+          logo = EXCLUDED.logo,
+          quotation_prefix = EXCLUDED.quotation_prefix,
+          voucher_prefix = EXCLUDED.voucher_prefix,
+          invoice_prefix = EXCLUDED.invoice_prefix,
+          tax_rate = EXCLUDED.tax_rate,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        db.settings.companyName, db.settings.gstNumber || null, db.settings.address || "",
+        db.settings.phone || null, db.settings.email || null, db.settings.bankName || null,
+        db.settings.bankAccount || null, db.settings.bankIfsc || null, db.settings.upiId || null,
+        db.settings.website || null, db.settings.logo || null, db.settings.quotationPrefix || 'SIH-QT-',
+        db.settings.voucherPrefix || 'SIH-VC-', db.settings.invoicePrefix || 'SIH-INV-', db.settings.taxRate || 5.0
+      ]);
+    }
+
+    // 13. Sync logs (activity_logs)
+    if (Array.isArray(db.logs)) {
+      for (const log of db.logs) {
+        await client.query(`
+          INSERT INTO activity_logs (id, timestamp, username, action)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (id) DO NOTHING
+        `, [log.id, log.timestamp, log.username, log.action]);
+      }
+    }
+
+    // 14. Sync whatsapp conversations & messages
+    if (Array.isArray(db.whatsappConversations)) {
+      for (const conv of db.whatsappConversations) {
+        await client.query(`
+          INSERT INTO whatsapp_conversations (id, customer_name, mobile, unread_count, assigned_to, last_message, last_timestamp)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            customer_name = EXCLUDED.customer_name,
+            mobile = EXCLUDED.mobile,
+            unread_count = EXCLUDED.unread_count,
+            assigned_to = EXCLUDED.assigned_to,
+            last_message = EXCLUDED.last_message,
+            last_timestamp = EXCLUDED.last_timestamp,
+            updated_at = CURRENT_TIMESTAMP
+        `, [conv.id, conv.customerName, conv.mobile, conv.unreadCount || 0, conv.assignedTo || null, conv.lastMessage || null, conv.lastTimestamp ? new Date(conv.lastTimestamp) : new Date()]);
+      }
+    }
+
+    if (Array.isArray(db.whatsappMessages)) {
+      for (const msg of db.whatsappMessages) {
+        await client.query(`
+          INSERT INTO whatsapp_messages (id, conversation_id, sender, sender_name, text, attachment_url, attachment_type, timestamp)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (id) DO UPDATE SET
+            conversation_id = EXCLUDED.conversation_id,
+            sender = EXCLUDED.sender,
+            sender_name = EXCLUDED.sender_name,
+            text = EXCLUDED.text,
+            attachment_url = EXCLUDED.attachment_url,
+            attachment_type = EXCLUDED.attachment_type,
+            timestamp = EXCLUDED.timestamp
+        `, [msg.id, msg.conversationId, msg.sender, msg.senderName || null, msg.text || "", msg.attachmentUrl || null, msg.attachmentType || null, msg.timestamp ? new Date(msg.timestamp) : new Date()]);
+      }
+    }
+
+    // 15. Sync quotations & items
+    if (Array.isArray(db.quotations)) {
+      for (const q of db.quotations) {
+        const qId = q.id || `qt-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const qDays = typeof q.numDays === "number" ? q.numDays : parseInt(q.numDays, 10) || 3;
+        const qAdults = typeof q.adults === "number" ? q.adults : parseInt(q.adults, 10) || 2;
+        const qChildren = typeof q.children === "number" ? q.children : parseInt(q.children, 10) || 0;
+        await client.query(`
+          INSERT INTO quotations (id, customer_name, customer_phone, customer_email, pickup_city, destination, travel_date, num_days, adults, children, discount_percent, terms_index, vehicle_details, hotel_details, day_wise_itinerary, status, quotation_number, pdf_path, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+          ON CONFLICT (id) DO UPDATE SET
+            customer_name = EXCLUDED.customer_name,
+            customer_phone = EXCLUDED.customer_phone,
+            customer_email = EXCLUDED.customer_email,
+            pickup_city = EXCLUDED.pickup_city,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            num_days = EXCLUDED.num_days,
+            adults = EXCLUDED.adults,
+            children = EXCLUDED.children,
+            discount_percent = EXCLUDED.discount_percent,
+            terms_index = EXCLUDED.terms_index,
+            vehicle_details = EXCLUDED.vehicle_details,
+            hotel_details = EXCLUDED.hotel_details,
+            day_wise_itinerary = EXCLUDED.day_wise_itinerary,
+            status = EXCLUDED.status,
+            quotation_number = EXCLUDED.quotation_number,
+            pdf_path = EXCLUDED.pdf_path,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          qId, q.customerName, q.customerPhone, q.customerEmail || null, q.pickupCity || 'Coimbatore', q.destination,
+          q.travelDate || null, qDays, qAdults, qChildren,
+          q.discountPercent || 0, q.termsIndex || 0, q.vehicleDetails || null, q.hotelDetails || null, q.dayWiseItinerary || null,
+          q.status || 'Draft', q.quotationNumber || null, q.pdfPath || null, q.createdAt ? new Date(q.createdAt) : new Date(), q.updatedAt ? new Date(q.updatedAt) : new Date()
+        ]);
+
+        const qItems = Array.isArray(q.quoteItems) ? q.quoteItems : [];
+        for (const item of qItems) {
+          const itemId = item.id || `qi-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+          const itemQty = typeof item.qty === "number" ? item.qty : parseInt(item.qty, 10) || 1;
+          await client.query(`
+            INSERT INTO quotation_items (id, quotation_id, name, hsn, qty, rate, gst)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO UPDATE SET
+              quotation_id = EXCLUDED.quotation_id,
+              name = EXCLUDED.name,
+              hsn = EXCLUDED.hsn,
+              qty = EXCLUDED.qty,
+              rate = EXCLUDED.rate,
+              gst = EXCLUDED.gst
+          `, [itemId, qId, item.name, item.hsn || '9985', itemQty, item.rate || 0, item.gst || 5.0]);
+        }
+      }
+    }
+
+    // 16. Sync whatsapp templates
+    if (Array.isArray(db.whatsappTemplates)) {
+      for (const t of db.whatsappTemplates) {
+        await client.query(`
+          INSERT INTO whatsapp_templates (id, name, category, message)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            category = EXCLUDED.category,
+            message = EXCLUDED.message,
+            updated_at = CURRENT_TIMESTAMP
+        `, [t.id, t.name, t.category || null, t.message]);
+      }
+    }
+
+    // 17. Sync whatsapp logs
+    if (Array.isArray(db.whatsappLogs)) {
+      for (const wl of db.whatsappLogs) {
+        await client.query(`
+          INSERT INTO whatsapp_logs (id, timestamp, customer_name, mobile, template_name, message_text, sent_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (id) DO UPDATE SET
+            timestamp = EXCLUDED.timestamp,
+            customer_name = EXCLUDED.customer_name,
+            mobile = EXCLUDED.mobile,
+            template_name = EXCLUDED.template_name,
+            message_text = EXCLUDED.message_text,
+            sent_by = EXCLUDED.sent_by
+        `, [wl.id, wl.timestamp, wl.customerName, wl.mobile, wl.templateName, wl.messageText, wl.sentBy]);
+      }
+    }
+
+    await client.query("COMMIT");
+    console.log("Successfully synchronized all CRM relational database modules!");
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    console.error("[RELATIONAL-SYNC-ERROR] Background relational mirror transaction failed:", redactSecrets(err.message || String(err)));
+  } finally {
+    client.release();
+  }
+}
+
+function readDb() {
+  try {
+    let loadedDb: any = null;
+    if (fs.existsSync(DB_PATH)) {
+      try {
+        const fileData = fs.readFileSync(DB_PATH, "utf-8");
+        loadedDb = JSON.parse(fileData);
+      } catch (parseErr) {
+        console.error("Failed to parse db.json, using INITIAL_DB", parseErr);
+      }
+    }
+
+    if (!loadedDb || typeof loadedDb !== "object") {
+      loadedDb = JSON.parse(JSON.stringify(INITIAL_DB));
+    }
+
+    db = loadedDb;
+    let updated = false;
+
+    // Upgrade database schema dynamically with fallback default values and type enforcement
+    const keys = Object.keys(INITIAL_DB) as Array<keyof typeof INITIAL_DB>;
+    for (const key of keys) {
+      const initialVal = INITIAL_DB[key];
+      const currentVal = db[key];
+
+      if (currentVal === undefined || currentVal === null) {
+        (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
+        updated = true;
+      } else if (Array.isArray(initialVal)) {
+        if (!Array.isArray(currentVal)) {
+          console.warn(`Database key "${key}" was expected to be an array, but got ${typeof currentVal}. Fixing.`);
           (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
           updated = true;
-        } else if (Array.isArray(initialVal)) {
-          if (!Array.isArray(currentVal)) {
-            console.warn(`Database key "${key}" was expected to be an array, but got ${typeof currentVal}. Fixing.`);
-            (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
-            updated = true;
-          }
-        } else if (typeof initialVal === "object") {
-          if (typeof currentVal !== "object") {
-            console.warn(`Database key "${key}" was expected to be an object, but got ${typeof currentVal}. Fixing.`);
-            (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
-            updated = true;
-          } else {
-            // Deep-merge object keys if any are missing
-            const subKeys = Object.keys(initialVal);
-            for (const subKey of subKeys) {
-              if ((currentVal as any)[subKey] === undefined || (currentVal as any)[subKey] === null) {
-                (currentVal as any)[subKey] = (initialVal as any)[subKey];
-                updated = true;
-              }
+        }
+      } else if (typeof initialVal === "object") {
+        if (typeof currentVal !== "object") {
+          console.warn(`Database key "${key}" was expected to be an object, but got ${typeof currentVal}. Fixing.`);
+          (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
+          updated = true;
+        } else {
+          // Deep-merge object keys if any are missing
+          const subKeys = Object.keys(initialVal);
+          for (const subKey of subKeys) {
+            if ((currentVal as any)[subKey] === undefined || (currentVal as any)[subKey] === null) {
+              (currentVal as any)[subKey] = (initialVal as any)[subKey];
+              updated = true;
             }
           }
         }
       }
+    }
 
-      if (updated) {
-        await writeDb();
+    if (updated) {
+      writeDb();
+    }
+  } catch (err) {
+    console.error("Error reading db.json", err);
+    db = JSON.parse(JSON.stringify(INITIAL_DB));
+  }
+}
+
+function writeDb() {
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+    
+    // Asynchronously update PostgreSQL in the background using a single atomic upsert
+    if (pool) {
+      pool.query(
+        "INSERT INTO crm_database (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP",
+        [JSON.stringify(db)]
+      ).then(() => {
+        // Trigger background relational table synchronization
+        syncRelationalDatabase();
+      }).catch((err: any) => {
+        console.error("Background PostgreSQL sync write failed:", redactSecrets(err.message || String(err)));
+      });
+    }
+  } catch (err) {
+    console.error("Error writing db.json", err);
+  }
+}
+
+// Load local database cache immediately at startup
+readDb();
+
+const isProd = process.env.NODE_ENV === "production";
+
+function assertDatabase() {
+  if (isProd && !pool) {
+    throw new Error("CRITICAL: PostgreSQL pool is not initialized. Database operations are blocked in production to prevent data divergence.");
+  }
+}
+
+function toSnakeCase(str: string): string {
+  return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
+function toCamelCase(str: string): string {
+  return str.replace(/([-_][a-z])/g, group => group.toUpperCase().replace('-', '').replace('_', ''));
+}
+
+function mapSettingsFromRow(row: any) {
+  if (!row) return null;
+  return {
+    companyName: row.company_name,
+    gstNumber: row.gst_number,
+    address: row.address,
+    phone: row.phone,
+    email: row.email,
+    bankName: row.bank_name,
+    bankAccount: row.bank_account,
+    bankIfsc: row.bank_ifsc,
+    upiId: row.upi_id,
+    website: row.website,
+    logo: row.logo,
+    quotationPrefix: row.quotation_prefix,
+    voucherPrefix: row.voucher_prefix,
+    invoicePrefix: row.invoice_prefix,
+    taxRate: row.tax_rate ? Number(row.tax_rate) : 5
+  };
+}
+
+function mapUserFromRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    mobile: row.mobile,
+    email: row.email,
+    username: row.username,
+    password: row.password,
+    role: row.role,
+    status: row.status,
+    lastLogin: row.last_login || "Never"
+  };
+}
+
+function mapFollowupFromRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    date: row.date,
+    time: row.time,
+    type: row.type,
+    priority: row.priority,
+    remarks: row.remarks,
+    notes: row.remarks, // compatibility
+    assignedTo: row.assigned_to,
+    staff: row.assigned_to, // compatibility
+    status: row.status,
+    completionDate: row.completion_date,
+    completionTime: row.completion_time,
+    leadId: row.lead_id
+  };
+}
+
+function mapLeadFromRow(row: any, followUps: any[] = []) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    mobile: row.mobile,
+    email: row.email,
+    destination: row.destination,
+    travelDate: row.travel_date,
+    adults: row.adults,
+    children: row.children,
+    budget: row.budget ? Number(row.budget) : null,
+    notes: row.notes,
+    status: row.status,
+    priority: row.priority,
+    assignedTo: row.assigned_to,
+    source: row.source,
+    tags: row.tags || [],
+    documents: row.documents || [],
+    timeline: row.timeline || [],
+    followUpHistory: followUps
+  };
+}
+
+function mapQuotationFromRow(row: any, items: any[] = []) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    customerName: row.customer_name,
+    customerPhone: row.customer_phone,
+    customerEmail: row.customer_email,
+    pickupCity: row.pickup_city,
+    destination: row.destination,
+    travelDate: row.travel_date,
+    numDays: row.num_days,
+    adults: row.adults,
+    children: row.children,
+    discountPercent: row.discount_percent ? Number(row.discount_percent) : 0,
+    termsIndex: row.terms_index,
+    vehicleDetails: row.vehicle_details,
+    hotelDetails: row.hotel_details,
+    dayWiseItinerary: row.day_wise_itinerary,
+    status: row.status,
+    quotationNumber: row.quotation_number,
+    pdfPath: row.pdf_path,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    quoteItems: items
+  };
+}
+
+function mapQuotationItemFromRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    quotationId: row.quotation_id,
+    name: row.name,
+    hsn: row.hsn,
+    qty: row.qty,
+    rate: row.rate ? Number(row.rate) : 0,
+    gst: row.gst ? Number(row.gst) : 5
+  };
+}
+
+function mapVoucherFromRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    customerId: row.customer_id,
+    guestName: row.guest_name,
+    guestMobile: row.guest_mobile,
+    guestEmail: row.guest_email,
+    hotelName: row.hotel_name,
+    hotelAddress: row.hotel_address,
+    hotelPhone: row.hotel_phone,
+    hotelEmail: row.hotel_email,
+    hotelContactPerson: row.hotel_contact_person,
+    destination: row.destination,
+    checkInDate: row.check_in_date,
+    checkOutDate: row.check_out_date,
+    numNights: row.num_nights ? Number(row.num_nights) : 1,
+    numRooms: row.num_rooms ? Number(row.num_rooms) : 1,
+    roomType: row.room_type,
+    mealPlan: row.meal_plan,
+    numAdults: row.num_adults ? Number(row.num_adults) : 2,
+    numChildren: row.num_children ? Number(row.num_children) : 0,
+    numInfants: row.num_infants ? Number(row.num_infants) : 0,
+    confirmationNumber: row.confirmation_number,
+    bookingStatus: row.booking_status,
+    bookingDate: row.booking_date,
+    voucherDate: row.voucher_date,
+    supplierName: row.supplier_name,
+    supplierContact: row.supplier_contact,
+    totalAmount: row.total_amount ? Number(row.total_amount) : 0,
+    advancePaid: row.advance_paid ? Number(row.advance_paid) : 0,
+    balanceAmount: row.balance_amount ? Number(row.balance_amount) : 0,
+    paymentStatus: row.payment_status,
+    specialRequests: row.special_requests,
+    billingInstructions: row.billing_instructions,
+    remarks: row.remarks,
+    internalNotes: row.internal_notes
+  };
+}
+
+function mapItineraryFromRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    bookingId: row.booking_id,
+    customerName: row.customer_name,
+    bookingNumber: row.booking_number,
+    destination: row.destination,
+    travelDate: row.travel_date,
+    days: row.days || []
+  };
+}
+
+export const DB_Service = {
+  async getVouchers() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM hotel_vouchers ORDER BY created_at DESC");
+      return res.rows.map(mapVoucherFromRow);
+    }
+    return db.vouchers || [];
+  },
+
+  async getVoucher(id: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM hotel_vouchers WHERE id = $1", [id]);
+      return res.rows.length > 0 ? mapVoucherFromRow(res.rows[0]) : null;
+    }
+    return db.vouchers.find((v: any) => v.id === id) || null;
+  },
+
+  async saveVoucher(v: any) {
+    assertDatabase();
+    const vId = v.id || `HBV-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO hotel_vouchers (id, booking_id, customer_id, guest_name, guest_mobile, guest_email, hotel_name, hotel_address, hotel_phone, hotel_email, hotel_contact_person, destination, check_in_date, check_out_date, num_nights, num_rooms, room_type, meal_plan, num_adults, num_children, num_infants, confirmation_number, booking_status, booking_date, voucher_date, supplier_name, supplier_contact, total_amount, advance_paid, balance_amount, payment_status, special_requests, billing_instructions, remarks, internal_notes)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+        ON CONFLICT (id) DO UPDATE SET
+          booking_id = EXCLUDED.booking_id,
+          customer_id = EXCLUDED.customer_id,
+          guest_name = EXCLUDED.guest_name,
+          guest_mobile = EXCLUDED.guest_mobile,
+          guest_email = EXCLUDED.guest_email,
+          hotel_name = EXCLUDED.hotel_name,
+          hotel_address = EXCLUDED.hotel_address,
+          hotel_phone = EXCLUDED.hotel_phone,
+          hotel_email = EXCLUDED.hotel_email,
+          hotel_contact_person = EXCLUDED.hotel_contact_person,
+          destination = EXCLUDED.destination,
+          check_in_date = EXCLUDED.check_in_date,
+          check_out_date = EXCLUDED.check_out_date,
+          num_nights = EXCLUDED.num_nights,
+          num_rooms = EXCLUDED.num_rooms,
+          room_type = EXCLUDED.room_type,
+          meal_plan = EXCLUDED.meal_plan,
+          num_adults = EXCLUDED.num_adults,
+          num_children = EXCLUDED.num_children,
+          num_infants = EXCLUDED.num_infants,
+          confirmation_number = EXCLUDED.confirmation_number,
+          booking_status = EXCLUDED.booking_status,
+          booking_date = EXCLUDED.booking_date,
+          voucher_date = EXCLUDED.voucher_date,
+          supplier_name = EXCLUDED.supplier_name,
+          supplier_contact = EXCLUDED.supplier_contact,
+          total_amount = EXCLUDED.total_amount,
+          advance_paid = EXCLUDED.advance_paid,
+          balance_amount = EXCLUDED.balance_amount,
+          payment_status = EXCLUDED.payment_status,
+          special_requests = EXCLUDED.special_requests,
+          billing_instructions = EXCLUDED.billing_instructions,
+          remarks = EXCLUDED.remarks,
+          internal_notes = EXCLUDED.internal_notes,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        vId, v.bookingId, v.customerId || v.guestMobile, v.guestName, v.guestMobile, v.guestEmail || null,
+        v.hotelName, v.hotelAddress || "", v.hotelPhone || null, v.hotelEmail || null, v.hotelContactPerson || null,
+        v.destination, v.checkInDate, v.checkOutDate, v.numNights ? Number(v.numNights) : 1, v.numRooms ? Number(v.numRooms) : 1,
+        v.roomType || null, v.mealPlan || null, v.numAdults ? Number(v.numAdults) : 2, v.numChildren ? Number(v.numChildren) : 0, v.numInfants ? Number(v.numInfants) : 0,
+        v.confirmationNumber || null, v.bookingStatus || 'Confirmed', v.bookingDate || null, v.voucherDate || null,
+        v.supplierName || null, v.supplierContact || null, v.totalAmount ? Number(v.totalAmount) : 0, v.advancePaid ? Number(v.advancePaid) : 0, v.balanceAmount ? Number(v.balanceAmount) : 0,
+        v.paymentStatus || 'Unpaid', v.specialRequests || null, v.billingInstructions || null, v.remarks || null, v.internalNotes || null
+      ]);
+    } else {
+      const idx = db.vouchers.findIndex((x: any) => x.id === v.id);
+      v.id = vId;
+      if (idx !== -1) {
+        db.vouchers[idx] = v;
+      } else {
+        db.vouchers.unshift(v);
       }
-      return; // success — stop retrying
-    } catch (err) {
-      lastErr = err;
-      console.error(`Error reading from database (attempt ${attempt}/${maxAttempts})`, err);
-      if (attempt < maxAttempts) {
-        // Back off before retrying — covers transient cold-start / pooler connection blips
-        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+      writeDb();
+    }
+  },
+
+  async deleteVoucher(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM hotel_vouchers WHERE id = $1", [id]);
+    } else {
+      db.vouchers = db.vouchers.filter((v: any) => v.id !== id);
+      writeDb();
+    }
+  },
+
+  async getItineraries() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM itineraries ORDER BY created_at DESC");
+      return res.rows.map(mapItineraryFromRow);
+    }
+    return db.itineraries || [];
+  },
+
+  async getItinerary(id: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM itineraries WHERE id = $1", [id]);
+      return res.rows.length > 0 ? mapItineraryFromRow(res.rows[0]) : null;
+    }
+    return db.itineraries.find((i: any) => i.id === id) || null;
+  },
+
+  async saveItinerary(it: any) {
+    assertDatabase();
+    const itId = it.id || `ITN-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO itineraries (id, booking_id, customer_name, booking_number, destination, travel_date, days)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+          booking_id = EXCLUDED.booking_id,
+          customer_name = EXCLUDED.customer_name,
+          booking_number = EXCLUDED.booking_number,
+          destination = EXCLUDED.destination,
+          travel_date = EXCLUDED.travel_date,
+          days = EXCLUDED.days,
+          updated_at = CURRENT_TIMESTAMP
+      `, [itId, it.bookingId, it.customerName, it.bookingNumber || it.bookingId, it.destination, it.travelDate, JSON.stringify(it.days || [])]);
+    } else {
+      const idx = db.itineraries.findIndex((x: any) => x.id === it.id);
+      it.id = itId;
+      if (idx !== -1) {
+        db.itineraries[idx] = it;
+      } else {
+        db.itineraries.unshift(it);
       }
+      writeDb();
+    }
+  },
+
+  async deleteItinerary(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM itineraries WHERE id = $1", [id]);
+    } else {
+      db.itineraries = db.itineraries.filter((i: any) => i.id !== id);
+      writeDb();
+    }
+  },
+
+  async getSettings() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM settings ORDER BY id DESC LIMIT 1");
+      return res.rows.length > 0 ? mapSettingsFromRow(res.rows[0]) : null;
+    }
+    return db.settings || {};
+  },
+
+  async saveSettings(settings: any) {
+    assertDatabase();
+    if (pool) {
+      await pool.query(`
+        INSERT INTO settings (id, company_name, gst_number, address, phone, email, bank_name, bank_account, bank_ifsc, upi_id, website, logo, quotation_prefix, voucher_prefix, invoice_prefix, tax_rate)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (id) DO UPDATE SET
+          company_name = EXCLUDED.company_name,
+          gst_number = EXCLUDED.gst_number,
+          address = EXCLUDED.address,
+          phone = EXCLUDED.phone,
+          email = EXCLUDED.email,
+          bank_name = EXCLUDED.bank_name,
+          bank_account = EXCLUDED.bank_account,
+          bank_ifsc = EXCLUDED.bank_ifsc,
+          upi_id = EXCLUDED.upi_id,
+          website = EXCLUDED.website,
+          logo = EXCLUDED.logo,
+          quotation_prefix = EXCLUDED.quotation_prefix,
+          voucher_prefix = EXCLUDED.voucher_prefix,
+          invoice_prefix = EXCLUDED.invoice_prefix,
+          tax_rate = EXCLUDED.tax_rate,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        settings.companyName || "", settings.gstNumber || "", settings.address || "", settings.phone || "", settings.email || "",
+        settings.bankName || "", settings.bankAccount || "", settings.bankIfsc || "", settings.upiId || "", settings.website || "",
+        settings.logo || "", settings.quotationPrefix || "QT", settings.voucherPrefix || "VC", settings.invoicePrefix || "INV",
+        settings.taxRate !== undefined ? Number(settings.taxRate) : 5
+      ]);
+    } else {
+      db.settings = settings;
+      writeDb();
+    }
+  },
+
+  async getUsers() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM users ORDER BY created_at DESC");
+      return res.rows.map(mapUserFromRow);
+    }
+    return db.users || [];
+  },
+
+  async saveUser(user: any) {
+    assertDatabase();
+    const uId = user.id || `USR-${Math.floor(100 + Math.random() * 900)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO users (id, full_name, mobile, email, username, password, role, status, last_login)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          full_name = EXCLUDED.full_name,
+          mobile = EXCLUDED.mobile,
+          email = EXCLUDED.email,
+          username = EXCLUDED.username,
+          password = EXCLUDED.password,
+          role = EXCLUDED.role,
+          status = EXCLUDED.status,
+          last_login = EXCLUDED.last_login,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        uId, user.fullName, user.mobile, user.email, user.username, user.password,
+        user.role, user.status || "Active", user.lastLogin || "Never"
+      ]);
+    } else {
+      const idx = db.users.findIndex((u: any) => u.id === user.id);
+      user.id = uId;
+      if (idx !== -1) {
+        db.users[idx] = user;
+      } else {
+        db.users.push(user);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteUser(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM users WHERE id = $1", [id]);
+    } else {
+      db.users = db.users.filter((u: any) => u.id !== id);
+      writeDb();
+    }
+  },
+
+  async getLeads() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM leads ORDER BY created_at DESC");
+      const leads = [];
+      for (const row of res.rows) {
+        const followupsRes = await pool.query("SELECT * FROM followups WHERE lead_id = $1 ORDER BY date DESC", [row.id]);
+        leads.push(mapLeadFromRow(row, followupsRes.rows.map(mapFollowupFromRow)));
+      }
+      return leads;
+    }
+    return db.leads || [];
+  },
+
+  async getLead(id: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM leads WHERE id = $1", [id]);
+      if (res.rows.length === 0) return null;
+      const followupsRes = await pool.query("SELECT * FROM followups WHERE lead_id = $1 ORDER BY date DESC", [id]);
+      return mapLeadFromRow(res.rows[0], followupsRes.rows.map(mapFollowupFromRow));
+    }
+    return db.leads.find((l: any) => l.id === id) || null;
+  },
+
+  async saveLead(lead: any) {
+    assertDatabase();
+    const lId = lead.id || `SIH-LD-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`
+          INSERT INTO leads (id, name, mobile, email, destination, travel_date, adults, children, budget, notes, status, priority, assigned_to, source, tags, documents, timeline)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            mobile = EXCLUDED.mobile,
+            email = EXCLUDED.email,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            adults = EXCLUDED.adults,
+            children = EXCLUDED.children,
+            budget = EXCLUDED.budget,
+            notes = EXCLUDED.notes,
+            status = EXCLUDED.status,
+            priority = EXCLUDED.priority,
+            assigned_to = EXCLUDED.assigned_to,
+            source = EXCLUDED.source,
+            tags = EXCLUDED.tags,
+            documents = EXCLUDED.documents,
+            timeline = EXCLUDED.timeline,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          lId, lead.name, lead.mobile, lead.email || null, lead.destination, lead.travelDate || null,
+          lead.adults || 2, lead.children || 0, lead.budget ? Number(lead.budget) : null, lead.notes || "",
+          lead.status || "New", lead.priority || "Medium", lead.assignedTo || "", lead.source || "Direct",
+          JSON.stringify(lead.tags || []), JSON.stringify(lead.documents || []), JSON.stringify(lead.timeline || [])
+        ]);
+
+        if (Array.isArray(lead.followUpHistory)) {
+          const fuIds = lead.followUpHistory.map((f: any) => f.id).filter(Boolean);
+          if (fuIds.length > 0) {
+            await client.query("DELETE FROM followups WHERE lead_id = $1 AND id NOT IN (" + fuIds.map((_: any, i: number) => `$${i + 2}`).join(", ") + ")", [lId, ...fuIds]);
+          } else {
+            await client.query("DELETE FROM followups WHERE lead_id = $1", [lId]);
+          }
+
+          for (const fu of lead.followUpHistory) {
+            const fuId = fu.id || `FU-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            await client.query(`
+              INSERT INTO followups (id, date, time, type, priority, remarks, assigned_to, status, completion_date, completion_time, lead_id)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              ON CONFLICT (id) DO UPDATE SET
+                date = EXCLUDED.date,
+                time = EXCLUDED.time,
+                type = EXCLUDED.type,
+                priority = EXCLUDED.priority,
+                remarks = EXCLUDED.remarks,
+                assigned_to = EXCLUDED.assigned_to,
+                status = EXCLUDED.status,
+                completion_date = EXCLUDED.completion_date,
+                completion_time = EXCLUDED.completion_time,
+                lead_id = EXCLUDED.lead_id,
+                updated_at = CURRENT_TIMESTAMP
+            `, [
+              fuId, fu.date, fu.time || null, fu.type, fu.priority || "Medium",
+              fu.remarks || fu.notes || "", fu.assignedTo || fu.staff || "", fu.status || "Pending",
+              fu.completionDate || null, fu.completionTime || null, lId
+            ]);
+          }
+        }
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      const idx = db.leads.findIndex((l: any) => l.id === lead.id);
+      lead.id = lId;
+      if (idx !== -1) {
+        db.leads[idx] = lead;
+      } else {
+        db.leads.unshift(lead);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteLead(id: string) {
+    assertDatabase();
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM followups WHERE lead_id = $1", [id]);
+        await client.query("DELETE FROM leads WHERE id = $1", [id]);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      db.leads = db.leads.filter((l: any) => l.id !== id);
+      writeDb();
+    }
+  },
+
+  async getFollowupsFlat() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query(`
+        SELECT f.*, l.name as lead_name, l.mobile as lead_mobile, l.email as lead_email
+        FROM followups f
+        JOIN leads l ON f.lead_id = l.id
+        ORDER BY f.date DESC, f.time DESC
+      `);
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        leadId: row.lead_id,
+        leadName: row.lead_name,
+        leadMobile: row.lead_mobile,
+        leadEmail: row.lead_email,
+        date: row.date,
+        time: row.time,
+        type: row.type,
+        priority: row.priority,
+        remarks: row.remarks,
+        notes: row.remarks,
+        staff: row.assigned_to,
+        assignedTo: row.assigned_to,
+        status: row.status,
+        completionDate: row.completion_date,
+        completionTime: row.completion_time
+      }));
+    }
+    const list: any[] = [];
+    db.leads.forEach((lead: any) => {
+      const safeHistory = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+      safeHistory.forEach((fu: any) => {
+        list.push({
+          ...fu,
+          leadId: lead.id,
+          leadName: lead.name,
+          leadMobile: lead.mobile,
+          leadEmail: lead.email,
+          notes: fu.notes || fu.remarks || "",
+          staff: fu.staff || fu.assignedTo || "",
+          remarks: fu.remarks || fu.notes || "",
+          assignedTo: fu.assignedTo || fu.staff || ""
+        });
+      });
+    });
+    return list;
+  },
+
+  async getPackages() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM tour_packages ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        destination: row.destination,
+        duration: row.duration,
+        price: row.price ? Number(row.price) : 0,
+        itinerary: row.itinerary || [],
+        inclusions: row.inclusions || [],
+        exclusions: row.exclusions || []
+      }));
+    }
+    return db.packages || [];
+  },
+
+  async savePackage(pkg: any) {
+    assertDatabase();
+    const pId = pkg.id || `PKG-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO tour_packages (id, name, destination, duration, price, itinerary, inclusions, exclusions)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          destination = EXCLUDED.destination,
+          duration = EXCLUDED.duration,
+          price = EXCLUDED.price,
+          itinerary = EXCLUDED.itinerary,
+          inclusions = EXCLUDED.inclusions,
+          exclusions = EXCLUDED.exclusions,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        pId, pkg.name, pkg.destination, pkg.duration, pkg.price ? Number(pkg.price) : 0,
+        JSON.stringify(pkg.itinerary || []), JSON.stringify(pkg.inclusions || []), JSON.stringify(pkg.exclusions || [])
+      ]);
+    } else {
+      const idx = db.packages.findIndex((p: any) => p.id === pkg.id);
+      pkg.id = pId;
+      if (idx !== -1) {
+        db.packages[idx] = pkg;
+      } else {
+        db.packages.unshift(pkg);
+      }
+      writeDb();
+    }
+  },
+
+  async deletePackage(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM tour_packages WHERE id = $1", [id]);
+    } else {
+      db.packages = db.packages.filter((p: any) => p.id !== id);
+      writeDb();
+    }
+  },
+
+  async getQuotations() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM quotations ORDER BY created_at DESC");
+      const list = [];
+      for (const row of res.rows) {
+        const itemsRes = await pool.query("SELECT * FROM quotation_items WHERE quotation_id = $1", [row.id]);
+        list.push(mapQuotationFromRow(row, itemsRes.rows.map(mapQuotationItemFromRow)));
+      }
+      return list;
+    }
+    return db.quotations || [];
+  },
+
+  async getQuotation(id: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM quotations WHERE id = $1", [id]);
+      if (res.rows.length === 0) return null;
+      const itemsRes = await pool.query("SELECT * FROM quotation_items WHERE quotation_id = $1", [id]);
+      return mapQuotationFromRow(res.rows[0], itemsRes.rows.map(mapQuotationItemFromRow));
+    }
+    return db.quotations.find((q: any) => q.id === id) || null;
+  },
+
+  async saveQuotation(quote: any) {
+    assertDatabase();
+    const qId = quote.id || `SIH-QT-${Math.floor(10000 + Math.random() * 90000)}`;
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`
+          INSERT INTO quotations (id, customer_name, customer_phone, customer_email, pickup_city, destination, travel_date, num_days, adults, children, discount_percent, terms_index, vehicle_details, hotel_details, day_wise_itinerary, status, quotation_number, pdf_path)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+          ON CONFLICT (id) DO UPDATE SET
+            customer_name = EXCLUDED.customer_name,
+            customer_phone = EXCLUDED.customer_phone,
+            customer_email = EXCLUDED.customer_email,
+            pickup_city = EXCLUDED.pickup_city,
+            destination = EXCLUDED.destination,
+            travel_date = EXCLUDED.travel_date,
+            num_days = EXCLUDED.num_days,
+            adults = EXCLUDED.adults,
+            children = EXCLUDED.children,
+            discount_percent = EXCLUDED.discount_percent,
+            terms_index = EXCLUDED.terms_index,
+            vehicle_details = EXCLUDED.vehicle_details,
+            hotel_details = EXCLUDED.hotel_details,
+            day_wise_itinerary = EXCLUDED.day_wise_itinerary,
+            status = EXCLUDED.status,
+            quotation_number = EXCLUDED.quotation_number,
+            pdf_path = EXCLUDED.pdf_path,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          qId, quote.customerName, quote.customerPhone, quote.customerEmail || null, quote.pickupCity || "Coimbatore",
+          quote.destination, quote.travelDate || null, quote.numDays || 3, quote.adults || 2, quote.children || 0,
+          quote.discountPercent ? Number(quote.discountPercent) : 0, quote.termsIndex || 0, quote.vehicleDetails || "",
+          quote.hotelDetails || "", quote.dayWiseItinerary || "", quote.status || "Draft", quote.quotationNumber || null,
+          quote.pdfPath || null
+        ]);
+
+        await client.query("DELETE FROM quotation_items WHERE quotation_id = $1", [qId]);
+        if (Array.isArray(quote.quoteItems)) {
+          for (const item of quote.quoteItems) {
+            const itemId = item.id || `qi-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            await client.query(`
+              INSERT INTO quotation_items (id, quotation_id, name, hsn, qty, rate, gst)
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+            `, [itemId, qId, item.name, item.hsn || "9985", item.qty || 1, item.rate ? Number(item.rate) : 0, item.gst || 5]);
+          }
+        }
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      const idx = db.quotations.findIndex((q: any) => q.id === quote.id);
+      quote.id = qId;
+      if (idx !== -1) {
+        db.quotations[idx] = quote;
+      } else {
+        db.quotations.unshift(quote);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteQuotation(id: string) {
+    assertDatabase();
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM quotation_items WHERE quotation_id = $1", [id]);
+        await client.query("DELETE FROM quotations WHERE id = $1", [id]);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      db.quotations = db.quotations.filter((q: any) => q.id !== id);
+      writeDb();
+    }
+  },
+
+  async getBookings() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM bookings ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        leadId: row.lead_id,
+        customerId: row.customer_id,
+        customerName: row.customer_name,
+        customerMobile: row.customer_mobile,
+        customerEmail: row.customer_email,
+        destination: row.destination,
+        travelDate: row.travel_date,
+        adults: row.adults,
+        children: row.children,
+        packagePrice: row.package_price ? Number(row.package_price) : 0,
+        hotelDetails: row.hotel_details,
+        driverDetails: row.driver_details,
+        status: row.status,
+        timeline: row.timeline || [],
+        documents: row.documents || []
+      }));
+    }
+    return db.bookings || [];
+  },
+
+  async getBooking(id: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM bookings WHERE id = $1", [id]);
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        leadId: row.lead_id,
+        customerId: row.customer_id,
+        customerName: row.customer_name,
+        customerMobile: row.customer_mobile,
+        customerEmail: row.customer_email,
+        destination: row.destination,
+        travelDate: row.travel_date,
+        adults: row.adults,
+        children: row.children,
+        packagePrice: row.package_price ? Number(row.package_price) : 0,
+        hotelDetails: row.hotel_details,
+        driverDetails: row.driver_details,
+        status: row.status,
+        timeline: row.timeline || [],
+        documents: row.documents || []
+      };
+    }
+    return db.bookings.find((b: any) => b.id === id) || null;
+  },
+
+  async saveBooking(booking: any) {
+    assertDatabase();
+    const bId = booking.id || `SIH-BK-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO bookings (id, lead_id, customer_id, customer_name, customer_mobile, customer_email, destination, travel_date, adults, children, package_price, hotel_details, driver_details, status, timeline, documents)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        ON CONFLICT (id) DO UPDATE SET
+          lead_id = EXCLUDED.lead_id,
+          customer_id = EXCLUDED.customer_id,
+          customer_name = EXCLUDED.customer_name,
+          customer_mobile = EXCLUDED.customer_mobile,
+          customer_email = EXCLUDED.customer_email,
+          destination = EXCLUDED.destination,
+          travel_date = EXCLUDED.travel_date,
+          adults = EXCLUDED.adults,
+          children = EXCLUDED.children,
+          package_price = EXCLUDED.package_price,
+          hotel_details = EXCLUDED.hotel_details,
+          driver_details = EXCLUDED.driver_details,
+          status = EXCLUDED.status,
+          timeline = EXCLUDED.timeline,
+          documents = EXCLUDED.documents,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        bId, booking.leadId || null, booking.customerId || booking.customerMobile, booking.customerName, booking.customerMobile,
+        booking.customerEmail || null, booking.destination, booking.travelDate, booking.adults || 2, booking.children || 0,
+        booking.packagePrice ? Number(booking.packagePrice) : 0, booking.hotelDetails || "", booking.driverDetails || null,
+        booking.status || "Pending", JSON.stringify(booking.timeline || []), JSON.stringify(booking.documents || [])
+      ]);
+    } else {
+      const idx = db.bookings.findIndex((b: any) => b.id === booking.id);
+      booking.id = bId;
+      if (idx !== -1) {
+        db.bookings[idx] = booking;
+      } else {
+        db.bookings.unshift(booking);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteBooking(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM bookings WHERE id = $1", [id]);
+    } else {
+      db.bookings = db.bookings.filter((b: any) => b.id !== id);
+      writeDb();
+    }
+  },
+
+  async getPayments() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM payment_ledgers ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        bookingId: row.booking_id,
+        customerName: row.customer_name,
+        totalAmount: row.total_amount ? Number(row.total_amount) : 0,
+        advancePaid: row.advance_paid ? Number(row.advance_paid) : 0,
+        balanceAmount: row.balance_amount ? Number(row.balance_amount) : 0,
+        status: row.status,
+        installments: row.installments || []
+      }));
+    }
+    return db.payments || [];
+  },
+
+  async savePayment(ledger: any) {
+    assertDatabase();
+    const pId = ledger.id || `SIH-PAY-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO payment_ledgers (id, booking_id, customer_name, total_amount, advance_paid, balance_amount, status, installments)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+          booking_id = EXCLUDED.booking_id,
+          customer_name = EXCLUDED.customer_name,
+          total_amount = EXCLUDED.total_amount,
+          advance_paid = EXCLUDED.advance_paid,
+          balance_amount = EXCLUDED.balance_amount,
+          status = EXCLUDED.status,
+          installments = EXCLUDED.installments,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        pId, ledger.bookingId, ledger.customerName, ledger.totalAmount ? Number(ledger.totalAmount) : 0,
+        ledger.advancePaid ? Number(ledger.advancePaid) : 0, ledger.balanceAmount ? Number(ledger.balanceAmount) : 0,
+        ledger.status || "Unpaid", JSON.stringify(ledger.installments || [])
+      ]);
+    } else {
+      const idx = db.payments.findIndex((p: any) => p.id === ledger.id);
+      ledger.id = pId;
+      if (idx !== -1) {
+        db.payments[idx] = ledger;
+      } else {
+        db.payments.unshift(ledger);
+      }
+      writeDb();
+    }
+  },
+
+  async getExpenses() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM expenses ORDER BY date DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        category: row.category,
+        amount: row.amount ? Number(row.amount) : 0,
+        date: row.date,
+        description: row.description,
+        paymentMode: row.payment_mode,
+        loggedBy: row.logged_by
+      }));
+    }
+    return db.expenses || [];
+  },
+
+  async saveExpense(exp: any) {
+    assertDatabase();
+    const eId = exp.id || `EXP-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO expenses (id, category, amount, date, description, payment_mode, logged_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+          category = EXCLUDED.category,
+          amount = EXCLUDED.amount,
+          date = EXCLUDED.date,
+          description = EXCLUDED.description,
+          payment_mode = EXCLUDED.payment_mode,
+          logged_by = EXCLUDED.logged_by
+      `, [
+        eId, exp.category, exp.amount ? Number(exp.amount) : 0, exp.date,
+        exp.description || "", exp.paymentMode || "Cash", exp.loggedBy || "admin"
+      ]);
+    } else {
+      const idx = db.expenses.findIndex((e: any) => e.id === exp.id);
+      exp.id = eId;
+      if (idx !== -1) {
+        db.expenses[idx] = exp;
+      } else {
+        db.expenses.unshift(exp);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteExpense(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM expenses WHERE id = $1", [id]);
+    } else {
+      db.expenses = db.expenses.filter((e: any) => e.id !== id);
+      writeDb();
+    }
+  },
+
+  async getHotels() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM hotels ORDER BY name ASC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        destination: row.destination,
+        rating: row.rating,
+        contactPerson: row.contact_person,
+        phone: row.phone,
+        email: row.email,
+        tariffStandard: row.tariff_standard ? Number(row.tariff_standard) : 0,
+        tariffDeluxe: row.tariff_deluxe ? Number(row.tariff_deluxe) : 0
+      }));
+    }
+    return db.hotels || [];
+  },
+
+  async saveHotel(hotel: any) {
+    assertDatabase();
+    const hId = hotel.id || `H-${Math.floor(10 + Math.random() * 90)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO hotels (id, name, destination, rating, contact_person, phone, email, tariff_standard, tariff_deluxe)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          destination = EXCLUDED.destination,
+          rating = EXCLUDED.rating,
+          contact_person = EXCLUDED.contact_person,
+          phone = EXCLUDED.phone,
+          email = EXCLUDED.email,
+          tariff_standard = EXCLUDED.tariff_standard,
+          tariff_deluxe = EXCLUDED.tariff_deluxe
+      `, [
+        hId, hotel.name, hotel.destination, hotel.rating || "3 Star", hotel.contactPerson || "",
+        hotel.phone || "", hotel.email || "", hotel.tariffStandard ? Number(hotel.tariffStandard) : 0,
+        hotel.tariffDeluxe ? Number(hotel.tariffDeluxe) : 0
+      ]);
+    } else {
+      const idx = db.hotels.findIndex((h: any) => h.id === hotel.id);
+      hotel.id = hId;
+      if (idx !== -1) {
+        db.hotels[idx] = hotel;
+      } else {
+        db.hotels.push(hotel);
+      }
+      writeDb();
+    }
+  },
+
+  async getDrivers() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM drivers ORDER BY name ASC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        phone: row.phone,
+        vehicleName: row.vehicle_name,
+        vehicleNumber: row.vehicle_number,
+        status: row.status,
+        licenseNumber: row.license_number
+      }));
+    }
+    return db.drivers || [];
+  },
+
+  async saveDriver(driver: any) {
+    assertDatabase();
+    const dId = driver.id || `DRV-${Math.floor(10 + Math.random() * 90)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO drivers (id, name, phone, vehicle_name, vehicle_number, status, license_number)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          phone = EXCLUDED.phone,
+          vehicle_name = EXCLUDED.vehicle_name,
+          vehicle_number = EXCLUDED.vehicle_number,
+          status = EXCLUDED.status,
+          license_number = EXCLUDED.license_number
+      `, [
+        dId, driver.name, driver.phone, driver.vehicleName || "", driver.vehicleNumber || "",
+        driver.status || "Available", driver.licenseNumber || ""
+      ]);
+    } else {
+      const idx = db.drivers.findIndex((d: any) => d.id === driver.id);
+      driver.id = dId;
+      if (idx !== -1) {
+        db.drivers[idx] = driver;
+      } else {
+        db.drivers.push(driver);
+      }
+      writeDb();
+    }
+  },
+
+  async getSuppliers() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM suppliers ORDER BY name ASC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        serviceType: row.service_type,
+        contactPerson: row.contact_person,
+        phone: row.phone,
+        email: row.email,
+        gstNumber: row.gst_number
+      }));
+    }
+    return db.suppliers || [];
+  },
+
+  async saveSupplier(supplier: any) {
+    assertDatabase();
+    const sId = supplier.id || `SUP-${Math.floor(10 + Math.random() * 90)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO suppliers (id, name, service_type, contact_person, phone, email, gst_number)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          service_type = EXCLUDED.service_type,
+          contact_person = EXCLUDED.contact_person,
+          phone = EXCLUDED.phone,
+          email = EXCLUDED.email,
+          gst_number = EXCLUDED.gst_number
+      `, [
+        sId, supplier.name, supplier.serviceType, supplier.contactPerson || "",
+        supplier.phone || "", supplier.email || "", supplier.gstNumber || ""
+      ]);
+    } else {
+      const idx = db.suppliers.findIndex((s: any) => s.id === supplier.id);
+      supplier.id = sId;
+      if (idx !== -1) {
+        db.suppliers[idx] = supplier;
+      } else {
+        db.suppliers.push(supplier);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteHotel(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM hotels WHERE id = $1", [id]);
+    } else {
+      db.hotels = (db.hotels || []).filter((h: any) => h.id !== id);
+      writeDb();
+    }
+  },
+
+  async deleteDriver(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM drivers WHERE id = $1", [id]);
+    } else {
+      db.drivers = (db.drivers || []).filter((d: any) => d.id !== id);
+      writeDb();
+    }
+  },
+
+  async deleteSupplier(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM suppliers WHERE id = $1", [id]);
+    } else {
+      db.suppliers = (db.suppliers || []).filter((s: any) => s.id !== id);
+      writeDb();
+    }
+  },
+
+  async getLogs() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM activity_logs ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        username: row.username,
+        action: row.action
+      }));
+    }
+    return db.logs || [];
+  },
+
+  async saveLog(log: any) {
+    assertDatabase();
+    const lId = log.id || `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO activity_logs (id, timestamp, username, action)
+        VALUES ($1, $2, $3, $4)
+      `, [lId, log.timestamp || new Date().toISOString(), log.username || "system", log.action || ""]);
+    } else {
+      db.logs = db.logs || [];
+      db.logs.unshift(log);
+      writeDb();
+    }
+  },
+
+  async getWhatsappConversations() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM whatsapp_conversations ORDER BY last_timestamp DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        customerName: row.customer_name,
+        mobile: row.mobile,
+        unreadCount: row.unread_count,
+        assignedTo: row.assigned_to,
+        lastMessage: row.last_message,
+        lastTimestamp: row.last_timestamp
+      }));
+    }
+    return db.whatsappConversations || [];
+  },
+
+  async saveWhatsappConversation(conv: any) {
+    assertDatabase();
+    const cId = conv.id || `wc-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO whatsapp_conversations (id, customer_name, mobile, unread_count, assigned_to, last_message, last_timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (id) DO UPDATE SET
+          customer_name = EXCLUDED.customer_name,
+          mobile = EXCLUDED.mobile,
+          unread_count = EXCLUDED.unread_count,
+          assigned_to = EXCLUDED.assigned_to,
+          last_message = EXCLUDED.last_message,
+          last_timestamp = EXCLUDED.last_timestamp,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        cId, conv.customerName, conv.mobile, conv.unreadCount || 0, conv.assignedTo || null,
+        conv.lastMessage || "", conv.lastTimestamp || new Date().toISOString()
+      ]);
+    } else {
+      const idx = db.whatsappConversations.findIndex((c: any) => c.id === conv.id);
+      conv.id = cId;
+      if (idx !== -1) {
+        db.whatsappConversations[idx] = conv;
+      } else {
+        db.whatsappConversations.unshift(conv);
+      }
+      writeDb();
+    }
+  },
+
+  async getWhatsappMessages(convId: string) {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM whatsapp_messages WHERE conversation_id = $1 ORDER BY timestamp ASC", [convId]);
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        conversationId: row.conversation_id,
+        sender: row.sender,
+        senderName: row.sender_name,
+        text: row.text,
+        attachmentUrl: row.attachment_url,
+        attachmentType: row.attachment_type,
+        timestamp: row.timestamp
+      }));
+    }
+    return (db.whatsappMessages || []).filter((m: any) => m.conversationId === convId);
+  },
+
+  async saveWhatsappMessage(msg: any) {
+    assertDatabase();
+    const mId = msg.id || `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO whatsapp_messages (id, conversation_id, sender, sender_name, text, attachment_url, attachment_type, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        mId, msg.conversationId, msg.sender, msg.senderName, msg.text,
+        msg.attachmentUrl || null, msg.attachmentType || null, msg.timestamp || new Date().toISOString()
+      ]);
+    } else {
+      db.whatsappMessages = db.whatsappMessages || [];
+      db.whatsappMessages.push(msg);
+      writeDb();
+    }
+  },
+
+  async getWhatsappTemplates() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM whatsapp_templates ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        category: row.category,
+        message: row.message
+      }));
+    }
+    return db.whatsappTemplates || [];
+  },
+
+  async saveWhatsappTemplate(t: any) {
+    assertDatabase();
+    const tId = t.id || `wt-${Date.now()}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO whatsapp_templates (id, name, category, message)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          category = EXCLUDED.category,
+          message = EXCLUDED.message,
+          updated_at = CURRENT_TIMESTAMP
+      `, [tId, t.name, t.category || "General", t.message]);
+    } else {
+      db.whatsappTemplates = db.whatsappTemplates || [];
+      const idx = db.whatsappTemplates.findIndex((x: any) => x.id === t.id);
+      t.id = tId;
+      if (idx !== -1) {
+        db.whatsappTemplates[idx] = t;
+      } else {
+        db.whatsappTemplates.push(t);
+      }
+      writeDb();
+    }
+  },
+
+  async deleteWhatsappTemplate(id: string) {
+    assertDatabase();
+    if (pool) {
+      await pool.query("DELETE FROM whatsapp_templates WHERE id = $1", [id]);
+    } else {
+      db.whatsappTemplates = (db.whatsappTemplates || []).filter((t: any) => t.id !== id);
+      writeDb();
+    }
+  },
+
+  async getWhatsappLogs() {
+    assertDatabase();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM whatsapp_logs ORDER BY created_at DESC");
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        customerName: row.customer_name,
+        mobile: row.mobile,
+        templateName: row.template_name,
+        messageText: row.message_text,
+        sentBy: row.sent_by
+      }));
+    }
+    return db.whatsappLogs || [];
+  },
+
+  async saveWhatsappLog(log: any) {
+    assertDatabase();
+    const lId = log.id || `wl-${Date.now()}`;
+    if (pool) {
+      await pool.query(`
+        INSERT INTO whatsapp_logs (id, timestamp, customer_name, mobile, template_name, message_text, sent_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `, [lId, log.timestamp || new Date().toISOString(), log.customerName, log.mobile, log.templateName, log.messageText, log.sentBy]);
+    } else {
+      db.whatsappLogs = db.whatsappLogs || [];
+      db.whatsappLogs.unshift(log);
+      writeDb();
     }
   }
+};
 
-  // Every attempt failed. Do NOT fall back to blank seed data here — doing so would
-  // let the server continue running, and the very next write (e.g. a login updating
-  // lastLogin) would permanently overwrite the real database with blank data. It is
-  // far safer to refuse to start and force a real fix / restart than to silently
-  // destroy production data on a transient connection hiccup.
-  console.error("FATAL: Could not read from the database after multiple attempts. Refusing to start to avoid overwriting existing data with blank seed data.", lastErr);
-  process.exit(1);
-}
-
-async function writeDb() {
-  try {
-    await pgPool.query(
-      `INSERT INTO crm_state (id, data, updated_at) VALUES (1, $1, now())
-       ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = now()`,
-      [JSON.stringify(db)]
-    );
-  } catch (err) {
-    console.error("Error writing to database", err);
-  }
-}
-
-// Initialize db — the rest of server startup (below, at the bottom of this file)
-// waits on this promise before accepting any requests.
-const dbReady = readDb();
-
-// Helper to log action
 async function logAction(username: string, action: string) {
   const logEntry = {
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -528,56 +2823,73 @@ async function logAction(username: string, action: string) {
     username,
     action
   };
-  db.logs.unshift(logEntry);
-  await writeDb();
+  try {
+    await DB_Service.saveLog(logEntry);
+  } catch (err) {
+    console.error("Failed to log action:", err);
+  }
 }
 
 // ---------------- REST APIs ----------------
 
 // Health Check
-app.get("/api/health", async (req: Request, res: Response) => {
-  res.json({ status: "ok", mode: "postgres-db", timestamp: new Date() });
+app.get("/api/health", (req: Request, res: Response) => {
+  res.json({ status: "ok", mode: "failsafe-file-db", timestamp: new Date() });
 });
 
 // Authentication Login
 app.post("/api/auth/login", async (req: Request, res: Response) => {
-  const { username, password } = req.body;
-  const user = db.users.find(u => u.username === username && u.password === password);
-  if (!user) {
-    return res.status(401).json({ success: false, message: "Invalid username or password" });
+  try {
+    const { username, password } = req.body;
+    const users = await DB_Service.getUsers();
+    const user = users.find(u => u.username === username && u.password === password);
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Invalid username or password" });
+    }
+    if (user.status !== "Active") {
+      return res.status(403).json({ success: false, message: "Your user account is deactivated. Contact administrator." });
+    }
+    user.lastLogin = new Date().toLocaleString();
+    await DB_Service.saveUser(user);
+    logAction(username, `Logged in successfully from device`);
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+        mobile: user.mobile,
+        status: user.status,
+        lastLogin: user.lastLogin
+      },
+      token: `jwt-token-sih-${user.role}-${Date.now()}`
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
   }
-  if (user.status !== "Active") {
-    return res.status(403).json({ success: false, message: "Your user account is deactivated. Contact administrator." });
-  }
-  user.lastLogin = new Date().toLocaleString();
-  await writeDb();
-  await logAction(username, `Logged in successfully from device`);
-  res.json({
-    success: true,
-    user: {
-      id: user.id,
-      fullName: user.fullName,
-      email: user.email,
-      username: user.username,
-      role: user.role,
-      mobile: user.mobile,
-      status: user.status,
-      lastLogin: user.lastLogin
-    },
-    token: `jwt-token-sih-${user.role}-${Date.now()}`
-  });
 });
 
 // Settings API
 app.get("/api/settings", async (req: Request, res: Response) => {
-  res.json(db.settings);
+  try {
+    const settings = await DB_Service.getSettings();
+    res.json(settings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const saveSettingsHandler = async (req: Request, res: Response) => {
-  db.settings = { ...db.settings, ...req.body };
-  await writeDb();
-  await logAction("admin", "Updated CRM global system settings");
-  res.json(db.settings);
+  try {
+    await DB_Service.saveSettings(req.body);
+    const settings = await DB_Service.getSettings();
+    logAction("admin", "Updated CRM global system settings");
+    res.json(settings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 app.put("/api/settings", saveSettingsHandler);
@@ -585,48 +2897,63 @@ app.post("/api/settings", saveSettingsHandler);
 
 // Leads CRUD
 app.get("/api/leads", async (req: Request, res: Response) => {
-  res.json(db.leads);
+  try {
+    const leads = await DB_Service.getLeads();
+    res.json(leads);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/leads", async (req: Request, res: Response) => {
-  const newLead = req.body;
-  newLead.id = newLead.id || `SIH-LD-${Math.floor(10000 + Math.random() * 90000)}`;
-  newLead.timeline = newLead.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Lead registered in South Indian Holidays system" }];
-  newLead.followUpHistory = newLead.followUpHistory || [];
-  db.leads.unshift(newLead);
-  await writeDb();
-  await logAction("system", `Created new lead: ${newLead.name} (${newLead.destination})`);
-  res.status(201).json(newLead);
+  try {
+    const newLead = req.body;
+    newLead.id = newLead.id || `SIH-LD-${Math.floor(10000 + Math.random() * 90000)}`;
+    newLead.timeline = newLead.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Lead registered in South Indian Holidays system" }];
+    newLead.followUpHistory = newLead.followUpHistory || [];
+    await DB_Service.saveLead(newLead);
+    logAction("system", `Created new lead: ${newLead.name} (${newLead.destination})`);
+    res.status(201).json(newLead);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/leads/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.leads.findIndex(l => l.id === id);
-  if (idx !== -1) {
-    db.leads[idx] = { ...db.leads[idx], ...req.body };
-    await writeDb();
-    await logAction("system", `Modified lead information for customer ${db.leads[idx].name}`);
-    res.json(db.leads[idx]);
-  } else {
-    res.status(404).json({ error: "Lead not found" });
+  try {
+    const { id } = req.params;
+    const lead = await DB_Service.getLead(id);
+    if (lead) {
+      const updated = { ...lead, ...req.body };
+      await DB_Service.saveLead(updated);
+      logAction("system", `Modified lead information for customer ${updated.name}`);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "Lead not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/leads/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const lead = db.leads.find(l => l.id === id);
-  if (lead) {
-    db.leads = db.leads.filter(l => l.id !== id);
-    await writeDb();
-    await logAction("admin", `Permanently deleted customer lead: ${lead.name}`);
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Lead not found" });
+  try {
+    const { id } = req.params;
+    const lead = await DB_Service.getLead(id);
+    if (lead) {
+      await DB_Service.deleteLead(id);
+      logAction("admin", `Permanently deleted customer lead: ${lead.name}`);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "Lead not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // Direct Follow-ups Global REST APIs
-app.get("/api/followups", async (req: Request, res: Response) => {
+app.get("/api/followups", (req: Request, res: Response) => {
   const { filter, staff, status } = req.query;
   const todayStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
 
@@ -677,7 +3004,7 @@ app.get("/api/followups", async (req: Request, res: Response) => {
   res.json(list);
 });
 
-app.post("/api/followups", async (req: Request, res: Response) => {
+app.post("/api/followups", (req: Request, res: Response) => {
   const { leadId, date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
 
   if (!date || !time || !notes) {
@@ -714,12 +3041,12 @@ app.post("/api/followups", async (req: Request, res: Response) => {
     text: `Created follow-up [${type}] scheduled by ${staff || "admin"}. Notes: ${notes}`
   });
 
-  await writeDb();
-  await logAction("system", `Scheduled follow-up for lead ${lead.name}`);
+  writeDb();
+  logAction("system", `Scheduled follow-up for lead ${lead.name}`);
   res.status(201).json(fu);
 });
 
-app.put("/api/followups/:id", async (req: Request, res: Response) => {
+app.put("/api/followups/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   const { date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
 
@@ -765,8 +3092,8 @@ app.put("/api/followups/:id", async (req: Request, res: Response) => {
         text: `Updated follow-up status to ${status || foundFu.status}. Notes: ${notes || ""}`
       });
 
-      await writeDb();
-      await logAction("system", `Updated follow-up ${id} on lead ${lead.name}`);
+      writeDb();
+      logAction("system", `Updated follow-up ${id} on lead ${lead.name}`);
       foundFu = updatedFu;
       break;
     }
@@ -779,7 +3106,7 @@ app.put("/api/followups/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/followups/:id", async (req: Request, res: Response) => {
+app.delete("/api/followups/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   let deleted = false;
 
@@ -793,8 +3120,8 @@ app.delete("/api/followups/:id", async (req: Request, res: Response) => {
         timestamp: new Date().toLocaleDateString("en-IN"),
         text: `Deleted scheduling follow-up item ${id}`
       });
-      await writeDb();
-      await logAction("system", `Deleted follow-up ${id} from lead ${lead.name}`);
+      writeDb();
+      logAction("system", `Deleted follow-up ${id} from lead ${lead.name}`);
       deleted = true;
       break;
     }
@@ -809,212 +3136,275 @@ app.delete("/api/followups/:id", async (req: Request, res: Response) => {
 
 // Follow-ups Sub-routes
 app.post("/api/leads/:leadId/followups", async (req: Request, res: Response) => {
-  const { leadId } = req.params;
-  const lead = db.leads.find(l => l.id === leadId);
-  if (!lead) return res.status(404).json({ error: "Lead not found" });
+  try {
+    const { leadId } = req.params;
+    const lead = await DB_Service.getLead(leadId);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
 
-  const fu = req.body;
-  fu.id = fu.id || `FU-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  lead.followUpHistory = lead.followUpHistory || [];
-  lead.followUpHistory.unshift(fu);
-  lead.timeline.unshift({
-    timestamp: new Date().toLocaleDateString('en-IN'),
-    text: `Scheduled new follow-up [${fu.type}]: ${fu.remarks}`
-  });
-  await writeDb();
-  await logAction("system", `Added follow-up scheduled for lead ${lead.name}`);
-  res.status(201).json(lead);
+    const fu = req.body;
+    fu.id = fu.id || `FU-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    lead.followUpHistory = lead.followUpHistory || [];
+    lead.followUpHistory.unshift(fu);
+    lead.timeline = lead.timeline || [];
+    lead.timeline.unshift({
+      timestamp: new Date().toLocaleDateString('en-IN'),
+      text: `Scheduled new follow-up [${fu.type}]: ${fu.remarks || fu.notes || ""}`
+    });
+    await DB_Service.saveLead(lead);
+    logAction("system", `Added follow-up scheduled for lead ${lead.name}`);
+    res.status(201).json(lead);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/leads/:leadId/followups/:fuId", async (req: Request, res: Response) => {
-  const { leadId, fuId } = req.params;
-  const lead = db.leads.find(l => l.id === leadId);
-  if (!lead) return res.status(404).json({ error: "Lead not found" });
+  try {
+    const { leadId, fuId } = req.params;
+    const lead = await DB_Service.getLead(leadId);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
 
-  const fuIdx = lead.followUpHistory.findIndex(f => f.id === fuId);
-  if (fuIdx !== -1) {
-    lead.followUpHistory[fuIdx] = { ...lead.followUpHistory[fuIdx], ...req.body };
-    lead.timeline.unshift({
-      timestamp: new Date().toLocaleDateString('en-IN'),
-      text: `Updated follow-up status to ${lead.followUpHistory[fuIdx].status}`
-    });
-    await writeDb();
-    await logAction("system", `Updated follow-up details on lead ${lead.name}`);
-    res.json(lead);
-  } else {
-    res.status(404).json({ error: "Followup not found" });
+    const fuIdx = lead.followUpHistory.findIndex((f: any) => f.id === fuId);
+    if (fuIdx !== -1) {
+      lead.followUpHistory[fuIdx] = { ...lead.followUpHistory[fuIdx], ...req.body };
+      lead.timeline = lead.timeline || [];
+      lead.timeline.unshift({
+        timestamp: new Date().toLocaleDateString('en-IN'),
+        text: `Updated follow-up status to ${lead.followUpHistory[fuIdx].status}`
+      });
+      await DB_Service.saveLead(lead);
+      logAction("system", `Updated follow-up details on lead ${lead.name}`);
+      res.json(lead);
+    } else {
+      res.status(404).json({ error: "Followup not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/leads/:leadId/followups/:fuId", async (req: Request, res: Response) => {
-  const { leadId, fuId } = req.params;
-  const lead = db.leads.find(l => l.id === leadId);
-  if (!lead) return res.status(404).json({ error: "Lead not found" });
+  try {
+    const { leadId, fuId } = req.params;
+    const lead = await DB_Service.getLead(leadId);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
 
-  lead.followUpHistory = lead.followUpHistory.filter(f => f.id !== fuId);
-  lead.timeline.unshift({
-    timestamp: new Date().toLocaleDateString('en-IN'),
-    text: `Deleted scheduling follow-up item`
-  });
-  await writeDb();
-  res.json(lead);
+    lead.followUpHistory = lead.followUpHistory.filter((f: any) => f.id !== fuId);
+    lead.timeline = lead.timeline || [];
+    lead.timeline.unshift({
+      timestamp: new Date().toLocaleDateString('en-IN'),
+      text: `Deleted scheduling follow-up item`
+    });
+    await DB_Service.saveLead(lead);
+    res.json(lead);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Packages CRUD (Newly added per user requirement)
 app.get("/api/packages", async (req: Request, res: Response) => {
-  res.json(db.packages);
+  try {
+    const packages = await DB_Service.getPackages();
+    res.json(packages);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/packages", async (req: Request, res: Response) => {
-  const newPkg = req.body;
-  newPkg.id = newPkg.id || `PKG-${Math.floor(10000 + Math.random() * 90000)}`;
-  db.packages.unshift(newPkg);
-  await writeDb();
-  await logAction("system", `Created standard tour package template: ${newPkg.name}`);
-  res.status(201).json(newPkg);
+  try {
+    const newPkg = req.body;
+    newPkg.id = newPkg.id || `PKG-${Math.floor(10000 + Math.random() * 90000)}`;
+    await DB_Service.savePackage(newPkg);
+    logAction("system", `Created standard tour package template: ${newPkg.name}`);
+    res.status(201).json(newPkg);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/packages/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.packages.findIndex(p => p.id === id);
-  if (idx !== -1) {
-    db.packages[idx] = { ...db.packages[idx], ...req.body };
-    await writeDb();
-    await logAction("system", `Updated tour package specifications: ${db.packages[idx].name}`);
-    res.json(db.packages[idx]);
-  } else {
-    res.status(404).json({ error: "Package not found" });
+  try {
+    const { id } = req.params;
+    const packages = await DB_Service.getPackages();
+    const existing = packages.find((p: any) => p.id === id);
+    if (existing) {
+      const updated = { ...existing, ...req.body };
+      await DB_Service.savePackage(updated);
+      logAction("system", `Updated tour package specifications: ${updated.name}`);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "Package not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/packages/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const pkg = db.packages.find(p => p.id === id);
-  if (pkg) {
-    db.packages = db.packages.filter(p => p.id !== id);
-    await writeDb();
-    await logAction("admin", `Permanently removed package from library: ${pkg.name}`);
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Package not found" });
+  try {
+    const { id } = req.params;
+    const packages = await DB_Service.getPackages();
+    const pkg = packages.find((p: any) => p.id === id);
+    if (pkg) {
+      await DB_Service.deletePackage(id);
+      logAction("admin", `Permanently removed package from library: ${pkg.name}`);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "Package not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // Bookings CRUD
 app.get("/api/bookings", async (req: Request, res: Response) => {
-  res.json(db.bookings);
+  try {
+    const bookings = await DB_Service.getBookings();
+    res.json(bookings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/bookings", async (req: Request, res: Response) => {
-  const booking = req.body;
-  booking.id = booking.id || `SIH-BK-2026-${Math.floor(1000 + Math.random() * 9000)}`;
-  booking.timeline = booking.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Manual booking created and vouchers locked." }];
-  booking.documents = booking.documents || [];
-  db.bookings.unshift(booking);
+  try {
+    const booking = req.body;
+    booking.id = booking.id || `SIH-BK-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    booking.timeline = booking.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Manual booking created and vouchers locked." }];
+    booking.documents = booking.documents || [];
+    await DB_Service.saveBooking(booking);
 
-  // Auto-generate outstanding payment ledger
-  const payId = `SIH-PAY-${Math.floor(1000 + Math.random() * 9000)}`;
-  const outstandingLedger = {
-    id: payId,
-    bookingId: booking.id,
-    customerName: booking.customerName,
-    totalAmount: booking.packagePrice,
-    advancePaid: 0,
-    balanceAmount: booking.packagePrice,
-    status: "Unpaid",
-    installments: []
-  };
-  db.payments.unshift(outstandingLedger);
+    // Auto-generate outstanding payment ledger
+    const payId = `SIH-PAY-${Math.floor(1000 + Math.random() * 9000)}`;
+    const outstandingLedger = {
+      id: payId,
+      bookingId: booking.id,
+      customerName: booking.customerName,
+      totalAmount: booking.packagePrice,
+      advancePaid: 0,
+      balanceAmount: booking.packagePrice,
+      status: "Unpaid",
+      installments: []
+    };
+    await DB_Service.savePayment(outstandingLedger);
 
-  await writeDb();
-  await logAction("system", `Created travel reservation for: ${booking.customerName} to ${booking.destination}`);
-  res.status(201).json({ booking, payment: outstandingLedger });
+    logAction("system", `Created travel reservation for: ${booking.customerName} to ${booking.destination}`);
+    res.status(201).json({ booking, payment: outstandingLedger });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/bookings/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.bookings.findIndex(b => b.id === id);
-  if (idx !== -1) {
-    db.bookings[idx] = { ...db.bookings[idx], ...req.body };
-    await writeDb();
-    await logAction("system", `Updated reservation parameters: ${db.bookings[idx].id}`);
-    res.json(db.bookings[idx]);
-  } else {
-    res.status(404).json({ error: "Booking not found" });
+  try {
+    const { id } = req.params;
+    const booking = await DB_Service.getBooking(id);
+    if (booking) {
+      const updated = { ...booking, ...req.body };
+      await DB_Service.saveBooking(updated);
+      logAction("system", `Updated reservation parameters: ${updated.id}`);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "Booking not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/bookings/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const booking = db.bookings.find(b => b.id === id);
-  if (booking) {
-    db.bookings = db.bookings.filter(b => b.id !== id);
-    db.payments = db.payments.filter(p => p.bookingId !== id);
-    db.vouchers = db.vouchers.filter(v => v.bookingId !== id);
-    db.itineraries = db.itineraries.filter(i => i.bookingId !== id);
-    await writeDb();
-    await logAction("admin", `Deleted reservation, ledger, and all tied documents for booking: ${booking.id}`);
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Booking not found" });
+  try {
+    const { id } = req.params;
+    const booking = await DB_Service.getBooking(id);
+    if (booking) {
+      await DB_Service.deleteBooking(id);
+      logAction("admin", `Deleted reservation, ledger, and all tied documents for booking: ${booking.id}`);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "Booking not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // Vouchers CRUD
 app.get("/api/vouchers", async (req: Request, res: Response) => {
-  res.json(db.vouchers);
+  try {
+    const vouchers = await DB_Service.getVouchers();
+    res.json(vouchers);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/vouchers", async (req: Request, res: Response) => {
-  const voucher = req.body;
-  voucher.id = voucher.id || `HBV-${Math.floor(10000 + Math.random() * 90000)}`;
-  db.vouchers.unshift(voucher);
-  await writeDb();
-  await logAction("operations", `Generated professional hotel voucher ${voucher.id} for ${voucher.guestName}`);
-  res.status(201).json(voucher);
+  try {
+    const voucher = req.body;
+    voucher.id = voucher.id || `HBV-${Math.floor(10000 + Math.random() * 90000)}`;
+    await DB_Service.saveVoucher(voucher);
+    logAction("operations", `Generated professional hotel voucher ${voucher.id} for ${voucher.guestName}`);
+    res.status(201).json(voucher);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/vouchers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.vouchers.findIndex(v => v.id === id);
-  if (idx !== -1) {
-    db.vouchers[idx] = { ...db.vouchers[idx], ...req.body };
-    await writeDb();
-    await logAction("operations", `Modified voucher variables on ${db.vouchers[idx].id}`);
-    res.json(db.vouchers[idx]);
-  } else {
-    res.status(404).json({ error: "Voucher not found" });
+  try {
+    const { id } = req.params;
+    const voucher = await DB_Service.getVoucher(id);
+    if (voucher) {
+      const updated = { ...voucher, ...req.body };
+      await DB_Service.saveVoucher(updated);
+      logAction("operations", `Modified voucher variables on ${updated.id}`);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "Voucher not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/vouchers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.vouchers = db.vouchers.filter(v => v.id !== id);
-  await writeDb();
-  res.json({ success: true });
+  try {
+    const { id } = req.params;
+    await DB_Service.deleteVoucher(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Quotations CRUD
 app.get("/api/quotations", async (req: Request, res: Response) => {
-  res.json(db.quotations || []);
+  try {
+    const quotations = await DB_Service.getQuotations();
+    res.json(quotations || []);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post("/api/quotations", async (req: Request, res: Response) => {
   try {
     const quotation = req.body;
     quotation.id = quotation.id || `QT-${Math.floor(10000 + Math.random() * 90000)}`;
-    const prefix = db.settings?.quotationPrefix || "SIH-QT-";
-    const count = (db.quotations || []).length;
+    const settings = await DB_Service.getSettings();
+    const prefix = settings?.quotationPrefix || "SIH-QT-";
+    const quotations = await DB_Service.getQuotations();
+    const count = quotations.length;
     quotation.quotationNumber = quotation.quotationNumber || `${prefix}${1000 + count + 1}`;
     quotation.createdAt = quotation.createdAt || new Date().toISOString();
     quotation.updatedAt = quotation.updatedAt || new Date().toISOString();
     quotation.status = quotation.status || "Draft";
     
-    db.quotations = db.quotations || [];
-    db.quotations.unshift(quotation);
-    await writeDb();
-    
-    await logAction("operations", `Created quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+    await DB_Service.saveQuotation(quotation);
+    logAction("operations", `Created quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
     res.status(201).json(quotation);
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Failed to create quotation" });
@@ -1024,17 +3414,16 @@ app.post("/api/quotations", async (req: Request, res: Response) => {
 app.put("/api/quotations/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    db.quotations = db.quotations || [];
-    const idx = db.quotations.findIndex((q: any) => q.id === id);
-    if (idx !== -1) {
-      db.quotations[idx] = { 
-        ...db.quotations[idx], 
+    const existing = await DB_Service.getQuotation(id);
+    if (existing) {
+      const updated = { 
+        ...existing, 
         ...req.body, 
         updatedAt: new Date().toISOString() 
       };
-      await writeDb();
-      await logAction("operations", `Updated quotation variables on ${db.quotations[idx].quotationNumber}`);
-      res.json(db.quotations[idx]);
+      await DB_Service.saveQuotation(updated);
+      logAction("operations", `Updated quotation variables on ${updated.quotationNumber}`);
+      res.json(updated);
     } else {
       res.status(404).json({ error: "Quotation not found" });
     }
@@ -1046,12 +3435,10 @@ app.put("/api/quotations/:id", async (req: Request, res: Response) => {
 app.delete("/api/quotations/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    db.quotations = db.quotations || [];
-    const quotation = db.quotations.find((q: any) => q.id === id);
+    const quotation = await DB_Service.getQuotation(id);
     if (quotation) {
-      db.quotations = db.quotations.filter((q: any) => q.id !== id);
-      await writeDb();
-      await logAction("operations", `Deleted quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+      await DB_Service.deleteQuotation(id);
+      logAction("operations", `Deleted quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: "Quotation not found" });
@@ -1065,15 +3452,14 @@ app.delete("/api/quotations/:id", async (req: Request, res: Response) => {
 app.post("/api/quotations/:id/pdf", upload.single("file"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    db.quotations = db.quotations || [];
-    const idx = db.quotations.findIndex((q: any) => q.id === id);
-    if (idx !== -1) {
+    const quotation = await DB_Service.getQuotation(id);
+    if (quotation) {
       if (req.file) {
         const fileUrl = `/uploads/${req.file.filename}`;
-        db.quotations[idx].pdfPath = fileUrl;
-        db.quotations[idx].updatedAt = new Date().toISOString();
-        await writeDb();
-        await logAction("operations", `Uploaded PDF file for quotation ${db.quotations[idx].quotationNumber}`);
+        quotation.pdfPath = fileUrl;
+        quotation.updatedAt = new Date().toISOString();
+        await DB_Service.saveQuotation(quotation);
+        logAction("operations", `Uploaded PDF file for quotation ${quotation.quotationNumber}`);
         res.json({ success: true, pdfPath: fileUrl });
       } else {
         res.status(400).json({ error: "No PDF file provided" });
@@ -1090,16 +3476,18 @@ app.post("/api/quotations/:id/pdf", upload.single("file"), async (req: Request, 
 app.post("/api/quotations/:id/share-whatsapp", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    db.quotations = db.quotations || [];
-    const idx = db.quotations.findIndex((q: any) => q.id === id);
-    if (idx !== -1) {
-      const q = db.quotations[idx];
-      const customerMobile = q.customerPhone || "";
+    const q = await DB_Service.getQuotation(id);
+    if (q) {
+      const customerMobile = q.customerPhone || q.customerMobile || "";
+      if (!customerMobile || customerMobile.trim() === "") {
+        return res.status(400).json({ error: "Validation Error: No mobile contact number is available for this customer." });
+      }
       const cleanPhone = customerMobile.replace(/\D/g, "");
       
-      const protocol = req.protocol;
-      const host = req.get("host");
-      const pdfUrl = q.pdfPath ? `${protocol}://${host}${q.pdfPath}` : `${protocol}://${host}/uploads/dummy-pdf.pdf`;
+      const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
+      const host = req.get("host") || "api.southindianholidays.co.in";
+      const baseUrl = process.env.APP_URL || process.env.PUBLIC_URL || process.env.BACKEND_URL || `${proto}://${host}`;
+      const pdfUrl = q.pdfPath ? `${baseUrl}${q.pdfPath}` : `${baseUrl}/uploads/dummy-pdf.pdf`;
       
       const message = `Dear ${q.customerName},\n\nThank you for choosing South Indian Holidays.\n\nPlease find your travel quotation attached.\n\nLink to your travel quotation: ${pdfUrl}\n\nRegards,\nSouth Indian Holidays`;
       
@@ -1107,9 +3495,9 @@ app.post("/api/quotations/:id/share-whatsapp", async (req: Request, res: Respons
       
       q.status = "Sent";
       q.updatedAt = new Date().toISOString();
-      await writeDb();
+      await DB_Service.saveQuotation(q);
       
-      await logAction("operations", `Shared quotation ${q.quotationNumber} with ${q.customerName} via WhatsApp`);
+      logAction("operations", `Shared quotation ${q.quotationNumber} with ${q.customerName} via WhatsApp`);
       
       res.json({ success: true, whatsappUrl, message });
     } else {
@@ -1124,304 +3512,378 @@ app.post("/api/quotations/:id/share-whatsapp", async (req: Request, res: Respons
 app.post("/api/quotations/:id/send-email", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    db.quotations = db.quotations || [];
-    const idx = db.quotations.findIndex((q: any) => q.id === id);
-    if (idx !== -1) {
-      const q = db.quotations[idx];
+    const q = await DB_Service.getQuotation(id);
+    if (q) {
       const email = req.body.email || q.customerEmail || "";
       
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email || !emailRegex.test(email)) {
+        return res.status(400).json({ error: "Validation Error: Invalid recipient email address format." });
+      }
+
+      const smtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
+      const smtpPort = Number(process.env.SMTP_PORT) || 587;
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+
+      if (!smtpUser || !smtpPass) {
+        return res.status(400).json({ 
+          error: "SMTP service is not configured. Please define SMTP_USER and SMTP_PASS in server environment settings." 
+        });
+      }
+
+      if (!q.pdfPath) {
+        return res.status(400).json({ error: "No PDF file generated for this quotation yet." });
+      }
+
+      const absolutePdfPath = path.join(process.cwd(), q.pdfPath);
+      if (!fs.existsSync(absolutePdfPath)) {
+        return res.status(400).json({ error: "Quotation PDF file not found on server." });
+      }
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+
+      const mailOptions = {
+        from: smtpUser,
+        to: email,
+        subject: `Travel Quotation ${q.quotationNumber} - South Indian Holidays`,
+        text: `Dear ${q.customerName},\n\nWe appreciate your inquiry with South Indian Holidays.\n\nPlease find attached the travel quotation for your upcoming trip to ${q.destination || "your destination"}.\n\nWarm regards,\nSouth Indian Holidays & Asset Management Pvt. Ltd.`,
+        attachments: [
+          {
+            filename: `Quotation-${q.quotationNumber}.pdf`,
+            path: absolutePdfPath,
+          }
+        ]
+      };
+
+      await transporter.sendMail(mailOptions);
+
       q.status = "Sent";
       q.updatedAt = new Date().toISOString();
-      await writeDb();
+      await DB_Service.saveQuotation(q);
       
-      await logAction("operations", `Emailed quotation ${q.quotationNumber} with PDF attachment to ${email}`);
+      logAction("operations", `Emailed quotation ${q.quotationNumber} with PDF attachment to ${email}`);
       
-      res.json({ success: true, message: `Email sent successfully to ${email}` });
+      res.json({ success: true, message: `Email successfully sent to ${email}` });
     } else {
       res.status(404).json({ error: "Quotation not found" });
     }
   } catch (error: any) {
+    console.error("Nodemailer sendMail failed:", error);
     res.status(500).json({ error: error.message || "Failed to send email" });
   }
 });
 
 // Itineraries CRUD
 app.get("/api/itineraries", async (req: Request, res: Response) => {
-  res.json(db.itineraries || []);
+  try {
+    const itineraries = await DB_Service.getItineraries();
+    res.json(itineraries || []);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post("/api/itineraries", async (req: Request, res: Response) => {
-  const itinerary = req.body;
-  itinerary.id = itinerary.id || `ITN-${Math.floor(10000 + Math.random() * 90000)}`;
-  itinerary.createdAt = itinerary.createdAt || new Date().toLocaleDateString("en-IN");
-  db.itineraries = db.itineraries || [];
-  db.itineraries.unshift(itinerary);
-  await writeDb();
-  await logAction("operations", `Created tour guide itinerary plan for: ${itinerary.customerName || itinerary.id}`);
-  res.status(201).json(itinerary);
+  try {
+    const itinerary = req.body;
+    itinerary.id = itinerary.id || `ITN-${Math.floor(10000 + Math.random() * 90000)}`;
+    itinerary.createdAt = itinerary.createdAt || new Date().toLocaleDateString("en-IN");
+    await DB_Service.saveItinerary(itinerary);
+    logAction("operations", `Created tour guide itinerary plan for: ${itinerary.customerName || itinerary.id}`);
+    res.status(201).json(itinerary);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.put("/api/itineraries/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.itineraries = db.itineraries || [];
-  const idx = db.itineraries.findIndex((i: any) => i.id === id);
-  if (idx !== -1) {
-    db.itineraries[idx] = { ...db.itineraries[idx], ...req.body };
-    await writeDb();
-    await logAction("operations", `Updated itinerary for: ${db.itineraries[idx].customerName || id}`);
-    res.json(db.itineraries[idx]);
-  } else {
-    res.status(404).json({ error: "Itinerary not found" });
+  try {
+    const { id } = req.params;
+    const existing = await DB_Service.getItinerary(id);
+    if (existing) {
+      const updated = { ...existing, ...req.body };
+      await DB_Service.saveItinerary(updated);
+      logAction("operations", `Updated itinerary for: ${updated.customerName || id}`);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "Itinerary not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.delete("/api/itineraries/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.itineraries = db.itineraries || [];
-  const itinerary = db.itineraries.find((i: any) => i.id === id);
-  if (itinerary) {
-    db.itineraries = db.itineraries.filter((i: any) => i.id !== id);
-    await writeDb();
-    await logAction("admin", `Deleted itinerary for: ${itinerary.customerName || id}`);
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ error: "Itinerary not found" });
+  try {
+    const { id } = req.params;
+    const itinerary = await DB_Service.getItinerary(id);
+    if (itinerary) {
+      await DB_Service.deleteItinerary(id);
+      logAction("admin", `Deleted itinerary for: ${itinerary.customerName || id}`);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "Itinerary not found" });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
 // Payments Ledger CRUD
 app.get("/api/payments", async (req: Request, res: Response) => {
-  res.json(db.payments);
+  try {
+    const payments = await DB_Service.getPayments();
+    res.json(payments || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/payments/:id/installments", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const ledger = db.payments.find(p => p.id === id);
-  if (!ledger) return res.status(404).json({ error: "Ledger not found" });
+  try {
+    const { id } = req.params;
+    const payments = await DB_Service.getPayments();
+    const ledger = payments.find((p: any) => p.id === id);
+    if (!ledger) return res.status(404).json({ error: "Ledger not found" });
 
-  const installment = req.body;
-  installment.id = installment.id || `INST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  ledger.installments = ledger.installments || [];
-  ledger.installments.push(installment);
+    const installment = req.body;
+    installment.id = installment.id || `INST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    ledger.installments = ledger.installments || [];
+    ledger.installments.push(installment);
 
-  // Recalculate advance & balance
-  ledger.advancePaid = ledger.installments.reduce((acc: number, inst: any) => acc + Number(inst.amount), 0);
-  ledger.balanceAmount = ledger.totalAmount - ledger.advancePaid;
+    // Recalculate advance & balance
+    ledger.advancePaid = ledger.installments.reduce((acc: number, inst: any) => acc + Number(inst.amount), 0);
+    ledger.balanceAmount = ledger.totalAmount - ledger.advancePaid;
 
-  if (ledger.balanceAmount <= 0) {
-    ledger.status = "Paid";
-  } else if (ledger.advancePaid > 0) {
-    ledger.status = "Partially Paid";
-  } else {
-    ledger.status = "Unpaid";
+    if (ledger.balanceAmount <= 0) {
+      ledger.status = "Paid";
+    } else if (ledger.advancePaid > 0) {
+      ledger.status = "Partially Paid";
+    } else {
+      ledger.status = "Unpaid";
+    }
+
+    await DB_Service.savePayment(ledger);
+    logAction("accountant", `Recorded payment voucher entry of ₹${installment.amount} for ${ledger.customerName}`);
+    res.json(ledger);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-
-  await writeDb();
-  await logAction("accountant", `Recorded payment voucher entry of ₹${installment.amount} for ${ledger.customerName}`);
-  res.json(ledger);
 });
 
 // Expenses CRUD
 app.get("/api/expenses", async (req: Request, res: Response) => {
-  res.json(db.expenses);
+  try {
+    const expenses = await DB_Service.getExpenses();
+    res.json(expenses || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/expenses", async (req: Request, res: Response) => {
-  const exp = req.body;
-  exp.id = exp.id || `EXP-${Math.floor(1000 + Math.random() * 9000)}`;
-  db.expenses.unshift(exp);
-  await writeDb();
-  await logAction("accountant", `Logged cash outflow expense for: ${exp.description}`);
-  res.status(201).json(exp);
+  try {
+    const exp = req.body;
+    exp.id = exp.id || `EXP-${Math.floor(1000 + Math.random() * 9000)}`;
+    await DB_Service.saveExpense(exp);
+    logAction("accountant", `Logged cash outflow expense for: ${exp.description}`);
+    res.status(201).json(exp);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete("/api/expenses/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.expenses = db.expenses.filter(e => e.id !== id);
-  await writeDb();
-  res.json({ success: true });
+  try {
+    const { id } = req.params;
+    await DB_Service.deleteExpense(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Catalog Products
-app.get("/api/products", async (req: Request, res: Response) => {
-  res.json(db.products);
+app.get("/api/products", (req: Request, res: Response) => {
+  res.json(db.products || []);
 });
 
-app.post("/api/products", async (req: Request, res: Response) => {
+app.post("/api/products", (req: Request, res: Response) => {
   const product = req.body;
   product.id = product.id || `p-${Date.now()}`;
+  db.products = db.products || [];
   db.products.push(product);
-  await writeDb();
+  writeDb();
   res.status(201).json(product);
 });
 
 // Hotels
 app.get("/api/hotels", async (req: Request, res: Response) => {
-  res.json(db.hotels);
+  try {
+    const hotels = await DB_Service.getHotels();
+    res.json(hotels || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/hotels", async (req: Request, res: Response) => {
-  const hotel = req.body;
-  hotel.id = hotel.id || `H-${Math.floor(10 + Math.random() * 90)}`;
-  db.hotels.push(hotel);
-  await writeDb();
-  res.status(201).json(hotel);
-});
-
-app.put("/api/hotels/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.hotels.findIndex((h: any) => h.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
-  db.hotels[idx] = { ...db.hotels[idx], ...req.body, id };
-  await writeDb();
-  res.json(db.hotels[idx]);
+  try {
+    const hotel = req.body;
+    hotel.id = hotel.id || `H-${Math.floor(10 + Math.random() * 90)}`;
+    await DB_Service.saveHotel(hotel);
+    res.status(201).json(hotel);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete("/api/hotels/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.hotels = db.hotels.filter((h: any) => h.id !== id);
-  await writeDb();
-  res.json({ success: true });
+  try {
+    const { id } = req.params;
+    await DB_Service.deleteHotel(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Drivers
 app.get("/api/drivers", async (req: Request, res: Response) => {
-  res.json(db.drivers);
+  try {
+    const drivers = await DB_Service.getDrivers();
+    res.json(drivers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/drivers", async (req: Request, res: Response) => {
-  const driver = req.body;
-  driver.id = driver.id || `DRV-${Math.floor(10 + Math.random() * 90)}`;
-  db.drivers.push(driver);
-  await writeDb();
-  res.status(201).json(driver);
-});
-
-app.put("/api/drivers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.drivers.findIndex((d: any) => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Driver not found" });
-  db.drivers[idx] = { ...db.drivers[idx], ...req.body, id };
-  await writeDb();
-  res.json(db.drivers[idx]);
+  try {
+    const driver = req.body;
+    driver.id = driver.id || `DRV-${Math.floor(10 + Math.random() * 90)}`;
+    await DB_Service.saveDriver(driver);
+    res.status(201).json(driver);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete("/api/drivers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.drivers = db.drivers.filter((d: any) => d.id !== id);
-  await writeDb();
-  res.json({ success: true });
+  try {
+    const { id } = req.params;
+    await DB_Service.deleteDriver(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Suppliers
 app.get("/api/suppliers", async (req: Request, res: Response) => {
-  res.json(db.suppliers);
+  try {
+    const suppliers = await DB_Service.getSuppliers();
+    res.json(suppliers || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/suppliers", async (req: Request, res: Response) => {
-  const supplier = req.body;
-  supplier.id = supplier.id || `SUP-${Math.floor(10 + Math.random() * 90)}`;
-  db.suppliers.push(supplier);
-  await writeDb();
-  res.status(201).json(supplier);
-});
-
-app.put("/api/suppliers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.suppliers.findIndex((s: any) => s.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Supplier not found" });
-  db.suppliers[idx] = { ...db.suppliers[idx], ...req.body, id };
-  await writeDb();
-  res.json(db.suppliers[idx]);
+  try {
+    const supplier = req.body;
+    supplier.id = supplier.id || `SUP-${Math.floor(10 + Math.random() * 90)}`;
+    await DB_Service.saveSupplier(supplier);
+    res.status(201).json(supplier);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete("/api/suppliers/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.suppliers = db.suppliers.filter((s: any) => s.id !== id);
-  await writeDb();
-  res.json({ success: true });
-});
-
-// Destination Master
-app.get("/api/destinations", async (req: Request, res: Response) => {
-  res.json(db.destinations || []);
-});
-
-app.post("/api/destinations", async (req: Request, res: Response) => {
-  const dest = req.body;
-  dest.id = dest.id || `DEST-${Date.now()}`;
-  dest.value = (dest.value || dest.name || "").toString().trim().toLowerCase().replace(/\s+/g, "-");
-  dest.status = dest.status || "Active";
-  db.destinations = db.destinations || [];
-  db.destinations.push(dest);
-  await writeDb();
-  await logAction("admin", `Added destination "${dest.name}" to Destination Master`);
-  res.status(201).json(dest);
-});
-
-app.put("/api/destinations/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.destinations = db.destinations || [];
-  const idx = db.destinations.findIndex((d: any) => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Destination not found" });
-  db.destinations[idx] = { ...db.destinations[idx], ...req.body, id };
-  await writeDb();
-  await logAction("admin", `Updated destination "${db.destinations[idx].name}" in Destination Master`);
-  res.json(db.destinations[idx]);
-});
-
-app.delete("/api/destinations/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.destinations = (db.destinations || []).filter((d: any) => d.id !== id);
-  await writeDb();
-  await logAction("admin", `Removed a destination from Destination Master`);
-  res.json({ success: true });
+  try {
+    const { id } = req.params;
+    await DB_Service.deleteSupplier(id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Users
 app.get("/api/users", async (req: Request, res: Response) => {
-  res.json(db.users);
+  try {
+    const users = await DB_Service.getUsers();
+    res.json(users || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/users", async (req: Request, res: Response) => {
-  const user = req.body;
-  user.id = user.id || `USR-${Math.floor(100 + Math.random() * 900)}`;
-  user.lastLogin = "Never";
-  db.users.push(user);
-  await writeDb();
-  await logAction("admin", `Created new backend credential profile: ${user.username}`);
-  res.status(201).json(user);
+  try {
+    const user = req.body;
+    user.id = user.id || `USR-${Math.floor(100 + Math.random() * 900)}`;
+    user.lastLogin = "Never";
+    await DB_Service.saveUser(user);
+    logAction("admin", `Created new backend credential profile: ${user.username}`);
+    res.status(201).json(user);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put("/api/users/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.users.findIndex(u => u.id === id);
-  if (idx !== -1) {
-    db.users[idx] = { ...db.users[idx], ...req.body };
-    await writeDb();
-    res.json(db.users[idx]);
-  } else {
-    res.status(404).json({ error: "User not found" });
+  try {
+    const { id } = req.params;
+    const users = await DB_Service.getUsers();
+    const existing = users.find((u: any) => u.id === id);
+    if (existing) {
+      const updated = { ...existing, ...req.body };
+      await DB_Service.saveUser(updated);
+      res.json(updated);
+    } else {
+      res.status(404).json({ error: "User not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/api/users/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const idx = db.users.findIndex(u => u.id === id);
-  if (idx !== -1) {
-    const deletedUser = db.users[idx];
-    db.users.splice(idx, 1);
-    await writeDb();
-    await logAction("admin", `Deleted user account: ${deletedUser.username}`);
-    res.json({ success: true, deleted: deletedUser });
-  } else {
-    res.status(404).json({ error: "User not found" });
+  try {
+    const { id } = req.params;
+    const users = await DB_Service.getUsers();
+    const existing = users.find((u: any) => u.id === id);
+    if (existing) {
+      await DB_Service.deleteUser(id);
+      logAction("admin", `Deleted user account: ${existing.username}`);
+      res.json({ success: true, deleted: existing });
+    } else {
+      res.status(404).json({ error: "User not found" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // Action Logs
 app.get("/api/logs", async (req: Request, res: Response) => {
-  res.json(db.logs);
+  try {
+    const logs = await DB_Service.getLogs();
+    res.json(logs || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Helper function to call Gemini content generation with retries and model fallbacks for high resilience
@@ -1767,7 +4229,7 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
 });
 
 // File upload endpoint
-app.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
+app.post("/api/upload", upload.single("file"), (req: Request, res: Response) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
@@ -1776,74 +4238,74 @@ app.post("/api/upload", upload.single("file"), async (req: Request, res: Respons
 });
 
 // WhatsApp API Endpoints
-app.get("/api/whatsapp/templates", async (req: Request, res: Response) => {
+app.get("/api/whatsapp/templates", (req: Request, res: Response) => {
   res.json(db.whatsappTemplates || []);
 });
 
-app.post("/api/whatsapp/templates", async (req: Request, res: Response) => {
+app.post("/api/whatsapp/templates", (req: Request, res: Response) => {
   const template = req.body;
   template.id = template.id || `wt-${Date.now()}`;
   db.whatsappTemplates = db.whatsappTemplates || [];
   db.whatsappTemplates.push(template);
-  await writeDb();
-  await logAction("system", `Created new WhatsApp message template: ${template.name}`);
+  writeDb();
+  logAction("system", `Created new WhatsApp message template: ${template.name}`);
   res.status(201).json(template);
 });
 
-app.put("/api/whatsapp/templates/:id", async (req: Request, res: Response) => {
+app.put("/api/whatsapp/templates/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   db.whatsappTemplates = db.whatsappTemplates || [];
   const idx = db.whatsappTemplates.findIndex((t: any) => t.id === id);
   if (idx !== -1) {
     db.whatsappTemplates[idx] = { ...db.whatsappTemplates[idx], ...req.body };
-    await writeDb();
-    await logAction("system", `Updated WhatsApp template: ${db.whatsappTemplates[idx].name}`);
+    writeDb();
+    logAction("system", `Updated WhatsApp template: ${db.whatsappTemplates[idx].name}`);
     res.json(db.whatsappTemplates[idx]);
   } else {
     res.status(404).json({ error: "Template not found" });
   }
 });
 
-app.delete("/api/whatsapp/templates/:id", async (req: Request, res: Response) => {
+app.delete("/api/whatsapp/templates/:id", (req: Request, res: Response) => {
   const { id } = req.params;
   db.whatsappTemplates = db.whatsappTemplates || [];
   const template = db.whatsappTemplates.find((t: any) => t.id === id);
   if (template) {
     db.whatsappTemplates = db.whatsappTemplates.filter((t: any) => t.id !== id);
-    await writeDb();
-    await logAction("admin", `Deleted WhatsApp template: ${template.name}`);
+    writeDb();
+    logAction("admin", `Deleted WhatsApp template: ${template.name}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Template not found" });
   }
 });
 
-app.get("/api/whatsapp/logs", async (req: Request, res: Response) => {
+app.get("/api/whatsapp/logs", (req: Request, res: Response) => {
   res.json(db.whatsappLogs || []);
 });
 
-app.post("/api/whatsapp/logs", async (req: Request, res: Response) => {
+app.post("/api/whatsapp/logs", (req: Request, res: Response) => {
   const log = req.body;
   log.id = log.id || `wl-${Date.now()}`;
   log.timestamp = log.timestamp || new Date().toISOString();
   db.whatsappLogs = db.whatsappLogs || [];
   db.whatsappLogs.unshift(log);
-  await writeDb();
+  writeDb();
   res.status(201).json(log);
 });
 
 // Backup System
-app.get("/api/backup/export", async (req: Request, res: Response) => {
+app.get("/api/backup/export", (req: Request, res: Response) => {
   res.json(db);
 });
 
-app.post("/api/backup/import", async (req: Request, res: Response) => {
+app.post("/api/backup/import", (req: Request, res: Response) => {
   try {
     const importedData = req.body;
     if (importedData && typeof importedData === "object" && importedData.users) {
       db = { ...INITIAL_DB, ...importedData };
-      await writeDb();
-      await logAction("admin", "Restored full CRM system backup manually");
+      writeDb();
+      logAction("admin", "Restored full CRM system backup manually");
       res.json({ success: true, message: "Backup imported and loaded successfully!" });
     } else {
       res.status(400).json({ success: false, message: "Invalid backup data structure" });
@@ -1903,9 +4365,10 @@ async function sendWhatsAppCloudMessage(to: string, messageText: string, attachm
     };
 
     if (attachmentUrl) {
+      const baseUrl = process.env.APP_URL || process.env.PUBLIC_URL || process.env.BACKEND_URL || "https://api.southindianholidays.co.in";
       data.type = "document";
       data.document = {
-        link: attachmentUrl.startsWith("http") ? attachmentUrl : `http://localhost:3000${attachmentUrl}`,
+        link: attachmentUrl.startsWith("http") ? attachmentUrl : `${baseUrl}${attachmentUrl}`,
         filename: attachmentUrl.split("/").pop() || "document.pdf",
         caption: messageText || "Your travel document from South Indian Holidays"
       };
@@ -1930,7 +4393,7 @@ async function sendWhatsAppCloudMessage(to: string, messageText: string, attachm
 }
 
 // Create/Retrieve WhatsApp Conversation manually
-app.post("/api/whatsapp/conversations", async (req: Request, res: Response) => {
+app.post("/api/whatsapp/conversations", (req: Request, res: Response) => {
   const { customerName, mobile, assignedTo } = req.body;
   if (!customerName || !mobile) {
     return res.status(400).json({ error: "customerName and mobile are required" });
@@ -1955,7 +4418,7 @@ app.post("/api/whatsapp/conversations", async (req: Request, res: Response) => {
       assignedTo: assignedTo || null
     };
     db.whatsappConversations.unshift(conv);
-    await writeDb();
+    writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
   }
 
@@ -1963,24 +4426,24 @@ app.post("/api/whatsapp/conversations", async (req: Request, res: Response) => {
 });
 
 // WhatsApp Conversations List
-app.get("/api/whatsapp/conversations", async (req: Request, res: Response) => {
+app.get("/api/whatsapp/conversations", (req: Request, res: Response) => {
   res.json(db.whatsappConversations || []);
 });
 
 // WhatsApp Messages for a Conversation
-app.get("/api/whatsapp/conversations/:id/messages", async (req: Request, res: Response) => {
+app.get("/api/whatsapp/conversations/:id/messages", (req: Request, res: Response) => {
   const { id } = req.params;
   const messages = (db.whatsappMessages || []).filter((m: any) => m.conversationId === id);
   res.json(messages);
 });
 
 // Reset Unread Count for Conversation
-app.put("/api/whatsapp/conversations/:id/read", async (req: Request, res: Response) => {
+app.put("/api/whatsapp/conversations/:id/read", (req: Request, res: Response) => {
   const { id } = req.params;
   const conv = (db.whatsappConversations || []).find((c: any) => c.id === id);
   if (conv) {
     conv.unreadCount = 0;
-    await writeDb();
+    writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
     res.json({ success: true, conversation: conv });
   } else {
@@ -1989,15 +4452,15 @@ app.put("/api/whatsapp/conversations/:id/read", async (req: Request, res: Respon
 });
 
 // Assign Conversation to Sales Executive
-app.put("/api/whatsapp/conversations/:id/assign", async (req: Request, res: Response) => {
+app.put("/api/whatsapp/conversations/:id/assign", (req: Request, res: Response) => {
   const { id } = req.params;
   const { assignedTo } = req.body;
   const conv = (db.whatsappConversations || []).find((c: any) => c.id === id);
   if (conv) {
     conv.assignedTo = assignedTo;
-    await writeDb();
+    writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
-    await logAction("system", `Assigned WhatsApp chat with ${conv.customerName} to ${assignedTo || "None"}`);
+    logAction("system", `Assigned WhatsApp chat with ${conv.customerName} to ${assignedTo || "None"}`);
     res.json({ success: true, conversation: conv });
   } else {
     res.status(404).json({ error: "Conversation not found" });
@@ -2031,7 +4494,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
   // Update conversation last activity
   conv.lastMessage = newMessage.text;
   conv.lastTimestamp = newMessage.timestamp;
-  await writeDb();
+  writeDb();
 
   // Broadcast agent message
   broadcastToClients({ type: "message_received", message: newMessage, conversation: conv });
@@ -2041,7 +4504,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
 
   // If credentials are not set, trigger sandbox simulator responses for a live feel!
   if (!sentReal) {
-    setTimeout(async () => {
+    setTimeout(() => {
       // Create a simulated reply
       let replyText = "Received! Thank you for the update. I will check the details and let you know.";
       const lowerText = (text || "").toLowerCase();
@@ -2068,7 +4531,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
       conv.lastMessage = simulatedReply.text;
       conv.lastTimestamp = simulatedReply.timestamp;
       conv.unreadCount = (conv.unreadCount || 0) + 1;
-      await writeDb();
+      writeDb();
 
       // Broadcast customer reply
       broadcastToClients({ type: "message_received", message: simulatedReply, conversation: conv });
@@ -2079,7 +4542,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
 });
 
 // Meta Webhook Verification Endpoints (Fulfill webhook callbacks)
-app.get("/api/whatsapp/webhook", async (req: Request, res: Response) => {
+app.get("/api/whatsapp/webhook", (req: Request, res: Response) => {
   const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || "sih_whatsapp_verify_token";
   
   const mode = req.query["hub.mode"];
@@ -2099,7 +4562,7 @@ app.get("/api/whatsapp/webhook", async (req: Request, res: Response) => {
 });
 
 // Meta Webhook Receiver Endpoint (Processes actual inbound messages)
-app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
+app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
   const body = req.body;
 
   console.log("[WhatsApp Webhook] Event payload received:", JSON.stringify(body));
@@ -2164,7 +4627,7 @@ app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
             followUpHistory: []
           };
           db.leads.unshift(newLead);
-          await logAction("system", `Created auto-captured lead: ${contactName} from WhatsApp callback`);
+          logAction("system", `Created auto-captured lead: ${contactName} from WhatsApp callback`);
         }
       } else {
         conv.lastMessage = textBody;
@@ -2183,7 +4646,7 @@ app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
       };
 
       db.whatsappMessages.push(incomingMsg);
-      await writeDb();
+      writeDb();
 
       // Broadcast to client-side components in real-time
       broadcastToClients({ type: "message_received", message: incomingMsg, conversation: conv });
@@ -2195,7 +4658,7 @@ app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
           timestamp: new Date().toLocaleDateString("en-IN"),
           text: `Received WhatsApp message: "${textBody}"`
         });
-        await writeDb();
+        writeDb();
         broadcastToClients({ type: "lead_updated", lead: matchingLead });
       }
 
@@ -2206,43 +4669,44 @@ app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
   res.sendStatus(404);
 });
 
-// Vite or Static file serving middleware setup
-const isProd = process.env.NODE_ENV === "production";
-dbReady.then(() => {
-  if (!isProd) {
-    createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    }).then((vite) => {
-      app.use(vite.middlewares);
+// Async bootstrap function to guarantee database synchronization before accepting traffic
+async function bootstrap() {
+  console.log("Bootstrap sequence starting...");
+  
+  // Try to sync with Postgres at boot (block-sync)
+  if (pool) {
+    try {
+      await syncWithPostgres();
+      await initializeRelationalTables();
+      await syncRelationalDatabase();
+    } catch (syncErr: any) {
+      console.error("Boot-time PostgreSQL synchronization failed. Continuing with local file-db fallback.", syncErr.message || syncErr);
+    }
+  } else {
+    console.log("Skipping boot-time PostgreSQL sync since pool is not initialized (no valid DATABASE_URL).");
+  }
 
+  const isProd = process.env.NODE_ENV === "production";
+  if (!isProd) {
+    try {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+      
       const server = app.listen(PORT, "0.0.0.0", () => {
         console.log(`Server running in DEVELOPMENT full-stack mode on http://localhost:${PORT}`);
       });
       setupWebSocket(server);
-    }).catch(err => {
+    } catch (err: any) {
       console.error("Vite server initialization failed:", err);
-    });
+    }
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath, {
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith("index.html")) {
-          // Never let index.html be cached — it's the entry point that
-          // references the current hashed JS/CSS filenames after each deploy.
-          // Without this, some mobile browsers (and CDNs) can keep serving an
-          // old index.html pointing at an old bundle long after a fix ships.
-          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        } else {
-          // Hashed asset filenames (e.g. index-abc123.js) are safe to cache
-          // aggressively — the filename itself changes whenever the content does.
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        }
-      }
-    }));
-
-    app.get("*", async (req: Request, res: Response) => {
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    app.use(express.static(distPath));
+    
+    app.get("*", (req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
 
@@ -2251,7 +4715,8 @@ dbReady.then(() => {
     });
     setupWebSocket(server);
   }
-}).catch(err => {
-  console.error("FATAL: Database initialization failed, server did not start.", err);
-  process.exit(1);
+}
+
+bootstrap().catch((bootstrapErr) => {
+  console.error("CRITICAL BOOTSTRAP FAILURE:", bootstrapErr);
 });

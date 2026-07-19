@@ -22,7 +22,7 @@ import WhatsappTab from "./components/WhatsappTab";
 import ItineraryTab from "./components/ItineraryTab";
 
 // Types
-import { User, Lead, TourPackage, Booking, HotelVoucher, PaymentLedger, Expense, Hotel, Driver, Supplier, Itinerary } from "./types";
+import { User, Lead, TourPackage, Booking, HotelVoucher, PaymentLedger, Expense, Hotel, Driver, Supplier, FollowUp, Itinerary } from "./types";
 import { getLocalDateString } from "./utils";
 
 export default function App() {
@@ -82,7 +82,6 @@ export default function App() {
   const [hotels, setHotels] = useState<Hotel[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [destinations, setDestinations] = useState<{ id: string; name: string; value: string; status: "Active" | "Inactive" }[]>([]);
   const [settings, setSettings] = useState<any>({
     companyName: "South Indian Holidays & Asset Management Pvt. Ltd.",
     gstNumber: "33AAECS0814M1Z2",
@@ -117,17 +116,6 @@ export default function App() {
     }
   }, []);
 
-  // Preserve any record that only ever existed in local memory (i.e. its create
-  // call never actually reached the server) when a fresh dataset comes in from
-  // the API. Without this, a record that failed to save silently disappears the
-  // next time data is re-fetched (e.g. after logging back in).
-  const mergeWithUnsynced = <T extends { id: string }>(serverList: T[], prevList: T[]): T[] => {
-    const unsynced = (Array.isArray(prevList) ? prevList : []).filter(
-      item => typeof item?.id === "string" && item.id.includes("-LOCAL-")
-    );
-    return unsynced.length ? [...unsynced, ...serverList] : serverList;
-  };
-
   // Sync API Datasets
   useEffect(() => {
     if (!user) return;
@@ -136,7 +124,7 @@ export default function App() {
       try {
         const [
           leadsRes, pkgsRes, bookingsRes, vouchersRes, itinerariesRes, paymentsRes,
-          expensesRes, usersRes, hotelsRes, driversRes, suppliersRes, settingsRes, destinationsRes
+          expensesRes, usersRes, hotelsRes, driversRes, suppliersRes, settingsRes
         ] = await Promise.all([
           axios.get("/api/leads").catch(() => ({ data: [] })),
           axios.get("/api/packages").catch(() => ({ data: [] })),
@@ -149,22 +137,20 @@ export default function App() {
           axios.get("/api/hotels").catch(() => ({ data: [] })),
           axios.get("/api/drivers").catch(() => ({ data: [] })),
           axios.get("/api/suppliers").catch(() => ({ data: [] })),
-          axios.get("/api/settings").catch(() => ({ data: null })),
-          axios.get("/api/destinations").catch(() => ({ data: [] }))
+          axios.get("/api/settings").catch(() => ({ data: null }))
         ]);
 
-        setLeads(prev => mergeWithUnsynced(Array.isArray(leadsRes.data) ? leadsRes.data : [], prev));
-        setPackages(prev => mergeWithUnsynced(Array.isArray(pkgsRes.data) ? pkgsRes.data : [], prev));
-        setBookings(prev => mergeWithUnsynced(Array.isArray(bookingsRes.data) ? bookingsRes.data : [], prev));
-        setVouchers(prev => mergeWithUnsynced(Array.isArray(vouchersRes.data) ? vouchersRes.data : [], prev));
-        setItineraries(prev => mergeWithUnsynced(Array.isArray(itinerariesRes.data) ? itinerariesRes.data : [], prev));
-        setPayments(prev => mergeWithUnsynced(Array.isArray(paymentsRes.data) ? paymentsRes.data : [], prev));
-        setExpenses(prev => mergeWithUnsynced(Array.isArray(expensesRes.data) ? expensesRes.data : [], prev));
-        setUsers(prev => mergeWithUnsynced(Array.isArray(usersRes.data) ? usersRes.data : [], prev));
-        setHotels(prev => mergeWithUnsynced(Array.isArray(hotelsRes.data) ? hotelsRes.data : [], prev));
-        setDrivers(prev => mergeWithUnsynced(Array.isArray(driversRes.data) ? driversRes.data : [], prev));
-        setSuppliers(prev => mergeWithUnsynced(Array.isArray(suppliersRes.data) ? suppliersRes.data : [], prev));
-        setDestinations(Array.isArray(destinationsRes.data) ? destinationsRes.data : []);
+        setLeads(Array.isArray(leadsRes.data) ? leadsRes.data : []);
+        setPackages(Array.isArray(pkgsRes.data) ? pkgsRes.data : []);
+        setBookings(Array.isArray(bookingsRes.data) ? bookingsRes.data : []);
+        setVouchers(Array.isArray(vouchersRes.data) ? vouchersRes.data : []);
+        setItineraries(Array.isArray(itinerariesRes.data) ? itinerariesRes.data : []);
+        setPayments(Array.isArray(paymentsRes.data) ? paymentsRes.data : []);
+        setExpenses(Array.isArray(expensesRes.data) ? expensesRes.data : []);
+        setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
+        setHotels(Array.isArray(hotelsRes.data) ? hotelsRes.data : []);
+        setDrivers(Array.isArray(driversRes.data) ? driversRes.data : []);
+        setSuppliers(Array.isArray(suppliersRes.data) ? suppliersRes.data : []);
         setSettings(settingsRes.data || {});
       } catch (error) {
         console.error("Batch dataset synchronization failed. Operating in local mode.", error);
@@ -231,9 +217,6 @@ export default function App() {
     setRealAdminUser(null);
     localStorage.removeItem("sih_crm_user");
     setCurrentTab("dashboard");
-    setLoginUsername("");
-    setLoginPassword("");
-    setLoginError("");
   };
 
   const handleImpersonateUser = (targetUser: User | null) => {
@@ -257,7 +240,6 @@ export default function App() {
       const res = await axios.post("/api/leads", leadData);
       setLeads(prev => [res.data, ...prev]);
     } catch {
-      alert("Warning: Server unreachable — this lead is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Lead = {
         id: `SIH-LD-LOCAL-${Date.now()}`,
         name: leadData.name || "Unnamed Client",
@@ -284,7 +266,6 @@ export default function App() {
       const res = await axios.put(`/api/leads/${id}`, leadData);
       setLeads(prev => prev.map(l => l.id === id ? res.data : l));
     } catch {
-      alert("Warning: Server unreachable — this lead update is reflected on-screen only and will be lost on logout/refresh until it can be resynced.");
       setLeads(prev => prev.map(l => l.id === id ? { ...l, ...leadData } as Lead : l));
     }
   };
@@ -294,7 +275,6 @@ export default function App() {
       await axios.delete(`/api/leads/${id}`);
       setLeads(prev => prev.filter(l => l.id !== id));
     } catch {
-      alert("Warning: Server unreachable — this lead could not be deleted on the server. It has been hidden on-screen only and may reappear after logout/refresh.");
       setLeads(prev => prev.filter(l => l.id !== id));
     }
   };
@@ -305,7 +285,6 @@ export default function App() {
       const res = await axios.post("/api/packages", pkg);
       setPackages(prev => [res.data, ...prev]);
     } catch {
-      alert("Warning: Server unreachable — this package is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: TourPackage = {
         id: `PKG-LOCAL-${Date.now()}`,
         name: pkg.name || "",
@@ -344,12 +323,11 @@ export default function App() {
   const handleAddBooking = async (bk: Partial<Booking>) => {
     try {
       const res = await axios.post("/api/bookings", bk);
-      setBookings(prev => [res.data.booking, ...prev]);
+      setBookings(prev => [res.data, ...prev]);
       // Trigger payment ledger refresh automatically since booking inserts payment row
       const payRes = await axios.get("/api/payments");
       setPayments(payRes.data);
     } catch {
-      alert("Warning: Server unreachable — this booking is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Booking = {
         id: `SIH-BK-${Date.now()}`,
         customerId: `CUST-${Math.floor(Math.random() * 9000 + 1000)}`,
@@ -389,7 +367,6 @@ export default function App() {
       const res = await axios.put(`/api/bookings/${id}`, bk);
       setBookings(prev => prev.map(b => b.id === id ? res.data : b));
     } catch {
-      alert("Warning: Server unreachable — this booking update is reflected on-screen only and will be lost on logout/refresh until it can be resynced.");
       setBookings(prev => prev.map(b => b.id === id ? { ...b, ...bk } as Booking : b));
     }
   };
@@ -399,7 +376,6 @@ export default function App() {
       await axios.delete(`/api/bookings/${id}`);
       setBookings(prev => prev.filter(b => b.id !== id));
     } catch {
-      alert("Warning: Server unreachable — this booking could not be deleted on the server. It has been hidden on-screen only and may reappear after logout/refresh.");
       setBookings(prev => prev.filter(b => b.id !== id));
     }
   };
@@ -410,7 +386,6 @@ export default function App() {
       const res = await axios.post("/api/vouchers", v);
       setVouchers(prev => [res.data, ...prev]);
     } catch {
-      alert("Warning: Server unreachable — this voucher is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew = {
         id: `HBV-LOCAL-${Date.now()}`,
         ...v
@@ -443,7 +418,6 @@ export default function App() {
       const res = await axios.post("/api/itineraries", itn);
       setItineraries(prev => [res.data, ...prev]);
     } catch {
-      alert("Warning: Server unreachable — this itinerary is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Itinerary = {
         id: `ITN-LOCAL-${Date.now()}`,
         customerName: itn.customerName || "",
@@ -477,10 +451,9 @@ export default function App() {
   // PAYMENTS Remittances
   const handleAddInstallment = async (ledgerId: string, inst: any) => {
     try {
-      const res = await axios.post(`/api/payments/${ledgerId}/installments`, inst);
+      const res = await axios.post("/api/payments/installment", { ledgerId, ...inst });
       setPayments(prev => prev.map(p => p.id === ledgerId ? res.data : p));
     } catch {
-      alert("Warning: Could not reach the server to save this payment installment. It has been kept on-screen only and will NOT survive a logout or refresh until connectivity is restored.");
       // Local calculation
       setPayments(prev => prev.map(p => {
         if (p.id !== ledgerId) return p;
@@ -506,7 +479,6 @@ export default function App() {
       const res = await axios.post("/api/expenses", exp);
       setExpenses(prev => [res.data, ...prev]);
     } catch {
-      alert("Warning: Server unreachable — this expense is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Expense = {
         id: `EXP-LOCAL-${Date.now()}`,
         description: exp.description || "",
@@ -534,7 +506,6 @@ export default function App() {
       const res = await axios.post("/api/users", u);
       setUsers(prev => [...prev, res.data]);
     } catch {
-      alert("Warning: Server unreachable — this user is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: User = {
         id: `USR-LOCAL-${Date.now()}`,
         fullName: u.fullName || "",
@@ -554,7 +525,6 @@ export default function App() {
       const res = await axios.put(`/api/users/${id}`, u);
       setUsers(prev => prev.map(item => item.id === id ? res.data : item));
     } catch {
-      alert("Warning: Server unreachable — this user update is reflected on-screen only and will be lost on logout/refresh until it can be resynced.");
       setUsers(prev => prev.map(item => item.id === id ? { ...item, ...u } as User : item));
     }
   };
@@ -564,7 +534,6 @@ export default function App() {
       await axios.delete(`/api/users/${id}`);
       setUsers(prev => prev.filter(item => item.id !== id));
     } catch {
-      alert("Warning: Server unreachable — this user could not be deleted on the server. It has been hidden on-screen only and may reappear after logout/refresh.");
       setUsers(prev => prev.filter(item => item.id !== id));
     }
   };
@@ -575,7 +544,6 @@ export default function App() {
       const res = await axios.post("/api/hotels", h);
       setHotels(prev => [...prev, res.data]);
     } catch {
-      alert("Warning: Server unreachable — this hotel is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Hotel = {
         id: `H-LOCAL-${Date.now()}`,
         name: h.name || "",
@@ -605,7 +573,6 @@ export default function App() {
       const res = await axios.post("/api/drivers", d);
       setDrivers(prev => [...prev, res.data]);
     } catch {
-      alert("Warning: Server unreachable — this driver is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Driver = {
         id: `DRV-LOCAL-${Date.now()}`,
         name: d.name || "",
@@ -633,7 +600,6 @@ export default function App() {
       const res = await axios.post("/api/suppliers", s);
       setSuppliers(prev => [...prev, res.data]);
     } catch {
-      alert("Warning: Server unreachable — this supplier is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
       const localNew: Supplier = {
         id: `SUP-LOCAL-${Date.now()}`,
         name: s.name || "",
@@ -657,49 +623,11 @@ export default function App() {
     }
   };
 
-  // DESTINATION MASTER
-  const handleAddDestination = async (d: { name: string; value?: string; status?: "Active" | "Inactive" }) => {
-    try {
-      const res = await axios.post("/api/destinations", d);
-      setDestinations(prev => [...prev, res.data]);
-    } catch {
-      alert("Warning: Server unreachable — this destination is saved on-screen only and will be lost on logout/refresh until it can be resynced.");
-      const localNew = {
-        id: `DEST-LOCAL-${Date.now()}`,
-        name: d.name,
-        value: (d.value || d.name || "").toLowerCase().replace(/\s+/g, "-"),
-        status: d.status || "Active" as const
-      };
-      setDestinations(prev => [...prev, localNew]);
-    }
-  };
-
-  const handleUpdateDestination = async (id: string, d: Partial<{ name: string; value: string; status: "Active" | "Inactive" }>) => {
-    try {
-      const res = await axios.put(`/api/destinations/${id}`, d);
-      setDestinations(prev => prev.map(item => item.id === id ? res.data : item));
-    } catch {
-      alert("Warning: Server unreachable — this destination update is reflected on-screen only and will be lost on logout/refresh until it can be resynced.");
-      setDestinations(prev => prev.map(item => item.id === id ? { ...item, ...d } : item));
-    }
-  };
-
-  const handleDeleteDestination = async (id: string) => {
-    try {
-      await axios.delete(`/api/destinations/${id}`);
-      setDestinations(prev => prev.filter(item => item.id !== id));
-    } catch {
-      alert("Warning: Server unreachable — this destination could not be deleted on the server. It has been hidden on-screen only and may reappear after logout/refresh.");
-      setDestinations(prev => prev.filter(item => item.id !== id));
-    }
-  };
-
   const handleUpdateSettings = async (nextSettings: any) => {
     try {
       const res = await axios.post("/api/settings", nextSettings);
       setSettings(res.data);
     } catch {
-      alert("Warning: Server unreachable — these company profile changes are reflected on-screen only and will be lost on logout/refresh until they can be resynced.");
       setSettings(nextSettings);
     }
   };
@@ -840,7 +768,6 @@ export default function App() {
         return (
           <LeadsTab
             leads={leads}
-            destinations={destinations}
             onAddLead={handleAddLead}
             onUpdateLead={handleUpdateLead}
             onDeleteLead={handleDeleteLead}
@@ -870,7 +797,6 @@ export default function App() {
         return (
           <PackagesTab
             packages={packages}
-            destinations={destinations}
             onAddPackage={handleAddPackage}
             onUpdatePackage={handleUpdatePackage}
             onDeletePackage={handleDeletePackage}
@@ -889,7 +815,6 @@ export default function App() {
           <QuotationsTab
             packages={packages}
             leads={leads}
-            destinations={destinations}
             itineraries={itineraries}
             selectedPkgFromLibrary={selectedPkgFromLibrary}
             clearSelectedPkg={() => setSelectedPkgFromLibrary(null)}
@@ -902,7 +827,6 @@ export default function App() {
         return (
           <BookingsTab
             bookings={bookings}
-            destinations={destinations}
             packages={packages}
             drivers={drivers}
             selectedPkgFromLibrary={selectedPkgFromLibrary}
@@ -928,7 +852,6 @@ export default function App() {
         return (
           <ItineraryTab
             itineraries={itineraries}
-            destinations={destinations}
             bookings={bookings}
             packages={packages}
             onAddItinerary={handleAddItinerary}
@@ -1001,23 +924,17 @@ export default function App() {
       case "hotels":
       case "drivers":
       case "suppliers":
-      case "destinations":
         return (
           <DirectoryTabs
             hotels={hotels}
             drivers={drivers}
             suppliers={suppliers}
-            destinations={destinations}
-            initialSubTab={currentTab === "destinations" ? "destinations" : currentTab === "drivers" ? "drivers" : currentTab === "suppliers" ? "suppliers" : "hotels"}
             onAddHotel={handleAddHotel}
             onAddDriver={handleAddDriver}
             onAddSupplier={handleAddSupplier}
             onDeleteHotel={handleDeleteHotel}
             onDeleteDriver={handleDeleteDriver}
             onDeleteSupplier={handleDeleteSupplier}
-            onAddDestination={handleAddDestination}
-            onUpdateDestination={handleUpdateDestination}
-            onDeleteDestination={handleDeleteDestination}
           />
         );
       default:
@@ -1041,7 +958,6 @@ export default function App() {
         companyLogo={settings.logo}
         sidebarOpen={sidebarOpen}
         setSidebarOpen={setSidebarOpen}
-        onLogout={handleLogout}
       />
 
       {/* Main Workspace Column */}
@@ -1063,17 +979,17 @@ export default function App() {
         />
 
         {realAdminUser && (
-          <div className="bg-amber-500/10 border-b border-amber-500/20 px-3 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between text-xs text-amber-300 select-none animate-fadeIn shrink-0">
-            <div className="flex items-center gap-2 min-w-0">
-              <Lucide.AlertTriangle className="w-4 h-4 text-amber-400 animate-pulse shrink-0" />
-              <span className="truncate sm:whitespace-normal">
+          <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-2.5 flex items-center justify-between text-xs text-amber-300 select-none animate-fadeIn shrink-0">
+            <div className="flex items-center gap-2">
+              <Lucide.AlertTriangle className="w-4 h-4 text-amber-400 animate-pulse" />
+              <span>
                 <strong>Simulation Active:</strong> Currently simulating the exact view and capabilities of{" "}
                 <strong className="text-white">{user?.fullName} ({user?.role?.toUpperCase()})</strong>.
               </span>
             </div>
             <button
               onClick={() => handleImpersonateUser(null)}
-              className="bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold px-3 py-1 rounded-lg transition-all cursor-pointer text-[10px] uppercase tracking-wider shadow self-start sm:self-auto shrink-0"
+              className="bg-amber-600 hover:bg-amber-500 text-slate-950 font-extrabold px-3 py-1 rounded-lg transition-all cursor-pointer text-[10px] uppercase tracking-wider shadow"
             >
               Exit Simulation
             </button>
@@ -1081,7 +997,7 @@ export default function App() {
         )}
 
         {/* Content canvas with custom scrollbar */}
-        <main className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6 space-y-4 sm:space-y-6">
+        <main className="flex-1 overflow-y-auto p-6 space-y-6">
           {renderActiveTabContent()}
         </main>
       </div>

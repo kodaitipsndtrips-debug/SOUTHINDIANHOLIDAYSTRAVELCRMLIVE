@@ -11,7 +11,6 @@ interface SidebarProps {
   companyLogo: string;
   sidebarOpen?: boolean;
   setSidebarOpen?: (open: boolean) => void;
-  onLogout?: () => void;
 }
 
 export default function Sidebar({
@@ -22,8 +21,7 @@ export default function Sidebar({
   companyName,
   companyLogo,
   sidebarOpen = false,
-  setSidebarOpen,
-  onLogout
+  setSidebarOpen
 }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -60,8 +58,7 @@ export default function Sidebar({
         { id: "products", label: "Catalog Desk", icon: "Package", roles: ["superadmin", "admin"] },
         { id: "hotels", label: "Hotels Directory", icon: "Building2", roles: ["superadmin", "admin", "operations"] },
         { id: "drivers", label: "Fleet Registry", icon: "Car", roles: ["superadmin", "admin", "operations"] },
-        { id: "suppliers", label: "Supplier Ledger", icon: "Briefcase", roles: ["superadmin", "admin", "operations"] },
-        { id: "destinations", label: "Destination Master", icon: "MapPin", roles: ["superadmin", "admin", "operations"] }
+        { id: "suppliers", label: "Supplier Ledger", icon: "Briefcase", roles: ["superadmin", "admin", "operations"] }
       ]
     },
     {
@@ -110,7 +107,7 @@ export default function Sidebar({
       )}
 
       <aside 
-        className={`fixed inset-y-0 left-0 flex flex-col lg:static bg-slate-950 border-r border-slate-800/80 h-full flex-shrink-0 select-none z-50 transition-all duration-300 ease-in-out ${
+        className={`fixed inset-y-0 left-0 lg:static lg:flex flex-col bg-slate-950 border-r border-slate-800/80 h-full flex-shrink-0 select-none z-50 transition-all duration-300 ease-in-out ${
           sidebarOpen 
             ? "translate-x-0 w-64" 
             : "-translate-x-full lg:translate-x-0 " + (isCollapsed ? "lg:w-20" : "lg:w-64")
@@ -269,18 +266,6 @@ export default function Sidebar({
               </div>
             )}
           </div>
-
-          {/* Logout Button */}
-          {onLogout && (
-            <button
-              onClick={onLogout}
-              title="Sign Out"
-              className={`mt-2 w-full flex items-center ${isCollapsed ? "justify-center" : "justify-center gap-2"} px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider text-rose-400 bg-rose-500/5 border border-rose-500/20 hover:bg-rose-500/10 hover:border-rose-500/30 transition-all cursor-pointer`}
-            >
-              <Lucide.LogOut className="w-3.5 h-3.5" />
-              {!isCollapsed && <span>Logout</span>}
-            </button>
-          )}
 
           {/* Core Footer Info */}
           {!isCollapsed ? (

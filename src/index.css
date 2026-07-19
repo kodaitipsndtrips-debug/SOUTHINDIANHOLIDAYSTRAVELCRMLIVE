@@ -81,15 +81,6 @@
 
 /* Global Application Design Enhancements */
 @layer utilities {
-  /* Hides scrollbar while keeping horizontal scroll available (used for the mobile header toolbar) */
-  .no-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-  .no-scrollbar::-webkit-scrollbar {
-    display: none;
-  }
-
   /* Dynamic Canvas overrides inside main layout */
   main {
     background-color: var(--bg-app) !important;

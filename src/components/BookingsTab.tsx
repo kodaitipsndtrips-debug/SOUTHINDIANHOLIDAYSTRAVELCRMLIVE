@@ -12,7 +12,6 @@ interface BookingsTabProps {
   onAddBooking: (booking: Partial<Booking>) => void;
   onUpdateBooking: (id: string, booking: Partial<Booking>) => void;
   onDeleteBooking: (id: string) => void;
-  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
 }
 
 export default function BookingsTab({
@@ -23,12 +22,11 @@ export default function BookingsTab({
   clearSelectedPkg,
   onAddBooking,
   onUpdateBooking,
-  onDeleteBooking,
-  destinations = []
+  onDeleteBooking
 }: BookingsTabProps) {
   const safeBookings = Array.isArray(bookings) ? bookings : [];
+  const safePackages = Array.isArray(packages) ? packages : [];
   const safeDrivers = Array.isArray(drivers) ? drivers : [];
-  const activeDestinations = (Array.isArray(destinations) ? destinations : []).filter(d => d.status !== "Inactive");
 
   const [search, setSearch] = useState("");
   const [filterDest, setFilterDest] = useState("all");
@@ -199,13 +197,13 @@ export default function BookingsTab({
                 onChange={(e) => setFormFields(prev => ({ ...prev, destination: e.target.value }))}
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
               >
-                {activeDestinations.length > 0 ? (
-                  activeDestinations.map(d => (
-                    <option key={d.id} value={d.value}>{d.name}</option>
-                  ))
-                ) : (
-                  <option value="kodaikanal">Kodaikanal</option>
-                )}
+                <option value="kodaikanal">Kodaikanal</option>
+                <option value="ooty">Ooty</option>
+                <option value="coorg">Coorg</option>
+                <option value="munnar">Munnar Hills</option>
+                <option value="mysore">Mysore</option>
+                <option value="alleppey">Alleppey Houseboats</option>
+                <option value="pondicherry">Pondicherry</option>
               </select>
             </div>
             <div>
@@ -318,9 +316,10 @@ export default function BookingsTab({
             className="bg-slate-950 border border-slate-850 p-2 rounded-lg text-xs text-slate-300 focus:outline-none capitalize"
           >
             <option value="all">-- All Locations --</option>
-            {(Array.isArray(destinations) ? destinations : []).map(d => (
-              <option key={d.id} value={d.value}>{d.name}</option>
-            ))}
+            <option value="kodaikanal">Kodaikanal</option>
+            <option value="ooty">Ooty</option>
+            <option value="coorg">Coorg</option>
+            <option value="munnar">Munnar</option>
           </select>
           <select
             value={filterStatus}
@@ -385,9 +384,7 @@ export default function BookingsTab({
               </div>
 
               <div className="flex items-center justify-between border-t border-slate-850 pt-3">
-              <span className="text-emerald-400 font-mono font-black">
-  ₹{Number(bk.packagePrice ?? 0).toLocaleString("en-IN")}
-</span>
+                <span className="text-emerald-400 font-mono font-black">₹{bk.packagePrice.toLocaleString("en-IN")}</span>
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => {
@@ -395,7 +392,7 @@ export default function BookingsTab({
                       if (cleanMobile.length === 10) {
                         cleanMobile = "91" + cleanMobile;
                       }
-                      const confirmationMsg = `Dear ${bk.customerName},\n\nYour booking with South Indian Holidays is CONFIRMED! 🎉✈️\n\nBooking ID: ${bk.id}\n📍 Destination: ${bk.destination.toUpperCase()}\n📅 Travel Date: ${formatFriendlyDate(bk.travelDate)}\n🏨 Stay: ${bk.hotelDetails}\n🚗 Cab details: ${bk.driverDetails || "Awaiting driver assignment"}\n💰 Package Price: ₹${Number(bk.packagePrice ?? 0).toLocaleString("en-IN")}\n\nOur operations desk will coordinate driver meeting instructions a day prior to departure.\n\nWarm Regards,\nSouth Indian Holidays`;
+                      const confirmationMsg = `Dear ${bk.customerName},\n\nYour booking with South Indian Holidays is CONFIRMED! 🎉✈️\n\nBooking ID: ${bk.id}\n📍 Destination: ${bk.destination.toUpperCase()}\n📅 Travel Date: ${formatFriendlyDate(bk.travelDate)}\n🏨 Stay: ${bk.hotelDetails}\n🚗 Cab details: ${bk.driverDetails || "Awaiting driver assignment"}\n💰 Package Price: ₹${bk.packagePrice.toLocaleString("en-IN")}\n\nOur operations desk will coordinate driver meeting instructions a day prior to departure.\n\nWarm Regards,\nSouth Indian Holidays`;
                       window.open(`https://wa.me/${cleanMobile}?text=${encodeURIComponent(confirmationMsg)}`, "_blank", "noopener,noreferrer");
                     }}
                     className="p-1.5 text-emerald-400 hover:text-emerald-300 bg-emerald-950/20 hover:bg-emerald-950/40 border border-emerald-900/30 rounded-lg cursor-pointer"

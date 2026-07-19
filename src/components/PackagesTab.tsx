@@ -9,7 +9,6 @@ interface PackagesTabProps {
   onDeletePackage: (id: string) => void;
   onUseInQuotation: (pkg: TourPackage) => void;
   onUseInBooking: (pkg: TourPackage) => void;
-  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
 }
 
 export default function PackagesTab({
@@ -18,11 +17,9 @@ export default function PackagesTab({
   onUpdatePackage,
   onDeletePackage,
   onUseInQuotation,
-  onUseInBooking,
-  destinations = []
+  onUseInBooking
 }: PackagesTabProps) {
   const safePackages = Array.isArray(packages) ? packages : [];
-  const activeDestinations = (Array.isArray(destinations) ? destinations : []).filter(d => d.status !== "Inactive");
 
   const [search, setSearch] = useState("");
   const [filterDest, setFilterDest] = useState("all");
@@ -374,13 +371,13 @@ export default function PackagesTab({
                 onChange={(e) => setFormFields(prev => ({ ...prev, destination: e.target.value }))}
                 className="w-full bg-slate-950 border border-slate-850 p-2.5 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
               >
-                {activeDestinations.length > 0 ? (
-                  activeDestinations.map(d => (
-                    <option key={d.id} value={d.value}>{d.name}</option>
-                  ))
-                ) : (
-                  <option value="kodaikanal">Kodaikanal</option>
-                )}
+                <option value="kodaikanal">Kodaikanal</option>
+                <option value="ooty">Ooty</option>
+                <option value="coorg">Coorg</option>
+                <option value="munnar">Munnar Hills</option>
+                <option value="mysore">Mysore</option>
+                <option value="alleppey">Alleppey Houseboats</option>
+                <option value="pondicherry">Pondicherry</option>
               </select>
             </div>
             <div>
@@ -492,9 +489,13 @@ export default function PackagesTab({
             className="bg-slate-950 border border-slate-850 p-2 rounded-lg text-xs text-slate-300 focus:outline-none"
           >
             <option value="all">-- Destination --</option>
-            {(Array.isArray(destinations) ? destinations : []).map(d => (
-              <option key={d.id} value={d.value}>{d.name}</option>
-            ))}
+            <option value="kodaikanal">Kodaikanal</option>
+            <option value="ooty">Ooty</option>
+            <option value="coorg">Coorg</option>
+            <option value="munnar">Munnar</option>
+            <option value="mysore">Mysore</option>
+            <option value="alleppey">Alleppey</option>
+            <option value="pondicherry">Pondicherry</option>
           </select>
 
           {/* Duration Filter */}

@@ -8,7 +8,6 @@ interface QuotationsTabProps {
   packages: TourPackage[];
   leads: Lead[];
   itineraries?: any[];
-  destinations?: { id: string; name: string; value: string; status: "Active" | "Inactive" }[];
   selectedPkgFromLibrary: TourPackage | null;
   clearSelectedPkg: () => void;
   selectedLeadForQuotation?: Lead | null;
@@ -39,7 +38,6 @@ export default function QuotationsTab({
   packages = [],
   leads = [],
   itineraries = [],
-  destinations = [],
   selectedPkgFromLibrary,
   clearSelectedPkg,
   selectedLeadForQuotation,
@@ -48,8 +46,6 @@ export default function QuotationsTab({
  }: QuotationsTabProps) {
   const safePackages = Array.isArray(packages) ? packages : [];
   const safeLeads = Array.isArray(leads) ? leads : [];
-  const safeDestinations = Array.isArray(destinations) ? destinations : [];
-  const activeDestinations = safeDestinations.filter(d => d.status !== "Inactive");
 
   // Quotations database state
   const [quotations, setQuotations] = useState<any[]>([]);
@@ -68,8 +64,10 @@ export default function QuotationsTab({
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
+  const [pickupCity, setPickupCity] = useState("Coimbatore");
   const [destination, setDestination] = useState("kodaikanal");
   const [travelDate, setTravelDate] = useState("");
+  const [duration, setDuration] = useState("3 Days / 2 Nights");
   const [adults, setAdults] = useState(2);
   const [children, setChildren] = useState(0);
 
@@ -116,20 +114,25 @@ export default function QuotationsTab({
     setCustomerName(lead.name);
     setCustomerPhone(lead.mobile);
     setCustomerEmail(lead.email || "");
+    setPickupCity(lead.pickupCity || "Coimbatore");
     setDestination(lead.destination);
     setTravelDate(lead.travelDate);
-    setAdults(Number(lead.adults) || 2);
-    setChildren(Number(lead.children) || 0);
+    
+    const leadAdults = Number(lead.adults) || 2;
+    const leadChildren = Number(lead.children) || 0;
+    setAdults(leadAdults);
+    setChildren(leadChildren);
 
     // Auto calculate initial price for loaded package if exists
     const matchingPkg = safePackages.find(p => p.destination === lead.destination);
     if (matchingPkg) {
+      setDuration(matchingPkg.duration);
       setQuoteItems([
         {
-          id: `qi-${Date.now()}-1`,
+          id: `qi-pkg-lead-${Date.now()}`,
           name: `${matchingPkg.name} - Accommodation & Sightseeing Template`,
           hsn: "9985",
-          qty: 1,
+          qty: leadAdults + leadChildren,
           rate: matchingPkg.price,
           gst: 5
         }
@@ -141,27 +144,52 @@ export default function QuotationsTab({
   React.useEffect(() => {
     if (selectedPkgFromLibrary) {
       setDestination(selectedPkgFromLibrary.destination);
-      setQuoteItems([
-        {
-          id: `qi-pkg-lib`,
-          name: `${selectedPkgFromLibrary.name} (Library Package Map)`,
-          hsn: "9985",
-          qty: 1,
-          rate: selectedPkgFromLibrary.price,
-          gst: 5
-        }
-      ]);
+      setDuration(selectedPkgFromLibrary.duration);
+      
+      const numAdults = Number(adults) || 2;
+      const numChildren = Number(children) || 0;
+      let targetAdults = numAdults;
+      let targetChildren = numChildren;
+
       // Search for any lead matched with destination to pre-fill
       const matchingLead = safeLeads.find(l => l.destination === selectedPkgFromLibrary.destination);
       if (matchingLead) {
+        targetAdults = Number(matchingLead.adults) || 2;
+        targetChildren = Number(matchingLead.children) || 0;
         setCustomerName(matchingLead.name);
         setCustomerPhone(matchingLead.mobile);
         setCustomerEmail(matchingLead.email || "");
         setTravelDate(matchingLead.travelDate);
+        setAdults(targetAdults);
+        setChildren(targetChildren);
       }
+
+      setQuoteItems([
+        {
+          id: `qi-pkg-lib-${Date.now()}`,
+          name: `${selectedPkgFromLibrary.name} (Library Package Map)`,
+          hsn: "9985",
+          qty: targetAdults + targetChildren,
+          rate: selectedPkgFromLibrary.price,
+          gst: 5
+        }
+      ]);
       clearSelectedPkg();
     }
-  }, [selectedPkgFromLibrary, safePackages, safeLeads, clearSelectedPkg]);
+  }, [selectedPkgFromLibrary, safePackages, safeLeads, clearSelectedPkg, adults, children]);
+
+  // Dynamically update package item quantity when adults/children fields change
+  React.useEffect(() => {
+    const totalPax = (Number(adults) || 2) + (Number(children) || 0);
+    setQuoteItems(prevItems => 
+      prevItems.map(item => {
+        if (item.id && item.id.startsWith("qi-pkg-")) {
+          return { ...item, qty: totalPax };
+        }
+        return item;
+      })
+    );
+  }, [adults, children]);
 
   // Load Lead if routed from Leads Tab
   React.useEffect(() => {
@@ -277,6 +305,7 @@ export default function QuotationsTab({
         customerName,
         customerPhone,
         customerEmail,
+        pickupCity,
         destination,
         travelDate,
         numDays,
@@ -319,6 +348,7 @@ export default function QuotationsTab({
     setCustomerName(q.customerName || "");
     setCustomerPhone(q.customerPhone || "");
     setCustomerEmail(q.customerEmail || "");
+    setPickupCity(q.pickupCity || "Coimbatore");
     setDestination(q.destination || "kodaikanal");
     setTravelDate(q.travelDate || "");
     setNumDays(Number(q.numDays) || 3);
@@ -419,6 +449,7 @@ export default function QuotationsTab({
           <div style="padding: 12px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #f1f5f9;">
             <h4 style="font-size: 10px; font-weight: bold; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 8px 0;">Vacation Parameters:</h4>
             <p style="text-transform: capitalize; margin: 0 0 4px 0;"><strong>Destination:</strong> ${destination}</p>
+            <p style="text-transform: capitalize; margin: 2px 0 0 0;"><strong>Pickup Location:</strong> ${pickupCity || "Coimbatore"}</p>
             <p style="margin: 2px 0 0 0;"><strong>Departure Date:</strong> ${travelDate || "Flexible"}</p>
             <p style="margin: 2px 0 0 0;"><strong>Duration:</strong> ${numDays} Days / ${numDays - 1 > 0 ? numDays - 1 : 1} Nights</p>
             <p style="margin: 2px 0 0 0;"><strong>Pax Group:</strong> ${adults} Adults, ${children} Kids</p>
@@ -524,20 +555,81 @@ export default function QuotationsTab({
   };
 
   // Trigger print-canvas generation and print
-  const triggerPrintEstimate = () => {
-    const printArea = document.getElementById("print-canvas");
-    if (!printArea) return;
-    printArea.innerHTML = buildPrintHTML(quotationNumber || "SIH-EST-TEMP", status);
-    window.print();
+  const triggerPrintEstimate = async () => {
+    if (!customerName.trim() || !customerPhone.trim()) {
+      alert("Validation Error: Please fill in mandatory Customer Name and Mobile Contact fields before printing.");
+      return;
+    }
+    setIsSubmitting(true);
+    const qNumber = quotationNumber || "SIH-EST-TEMP";
+    
+    const container = document.createElement("div");
+    container.style.position = "fixed";
+    container.style.left = "0";
+    container.style.top = "0";
+    container.style.width = "800px";
+    container.style.zIndex = "-9999";
+    container.style.background = "white";
+    container.style.color = "black";
+    container.style.display = "block";
+    container.className = "text-black bg-white p-4";
+    container.innerHTML = buildPrintHTML(qNumber, status);
+    document.body.appendChild(container);
+
+    try {
+      const opt = {
+        margin:       10,
+        filename:     `Quotation-${qNumber}.pdf`,
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      // Generate the PDF as a blob
+      const pdfBlob = await html2pdf().from(container).set(opt).output('blob');
+      const pdfUrl = URL.createObjectURL(pdfBlob);
+
+      // Create a hidden iframe for print
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "none";
+      iframe.src = pdfUrl;
+      document.body.appendChild(iframe);
+
+      iframe.onload = () => {
+        setTimeout(() => {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+          // Clean up the iframe and object URL after print dialog closes
+          setTimeout(() => {
+            if (document.body.contains(iframe)) {
+              document.body.removeChild(iframe);
+            }
+            URL.revokeObjectURL(pdfUrl);
+          }, 1000);
+        }, 500);
+      };
+    } catch (err: any) {
+      console.error(err);
+      alert("Print failed: " + err.message);
+    } finally {
+      if (document.body.contains(container)) {
+        document.body.removeChild(container);
+      }
+      setIsSubmitting(false);
+    }
   };
 
   // Core PDF generator and uploader
   const uploadPDF = async (quoteId: string, qNumber: string) => {
     const container = document.createElement("div");
-    container.style.position = "absolute";
-    container.style.left = "-9999px";
+    container.style.position = "fixed";
+    container.style.left = "0";
     container.style.top = "0";
     container.style.width = "800px";
+    container.style.zIndex = "-9999";
     container.style.background = "white";
     container.style.color = "black";
     container.style.display = "block";
@@ -589,6 +681,7 @@ export default function QuotationsTab({
           customerName,
           customerPhone,
           customerEmail,
+          pickupCity,
           destination,
           travelDate,
           numDays,
@@ -610,10 +703,11 @@ export default function QuotationsTab({
       }
 
       const container = document.createElement("div");
-      container.style.position = "absolute";
-      container.style.left = "-9999px";
+      container.style.position = "fixed";
+      container.style.left = "0";
       container.style.top = "0";
       container.style.width = "800px";
+      container.style.zIndex = "-9999";
       container.style.background = "white";
       container.style.color = "black";
       container.style.display = "block";
@@ -667,6 +761,7 @@ export default function QuotationsTab({
           customerName,
           customerPhone,
           customerEmail,
+          pickupCity,
           destination,
           travelDate,
           numDays,
@@ -723,6 +818,7 @@ export default function QuotationsTab({
           customerName,
           customerPhone,
           customerEmail,
+          pickupCity,
           destination,
           travelDate,
           numDays,
@@ -1027,7 +1123,17 @@ export default function QuotationsTab({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Pickup Location</label>
+                  <input
+                    type="text"
+                    value={pickupCity}
+                    onChange={(e) => setPickupCity(e.target.value)}
+                    placeholder="Pickup City"
+                    className="w-full bg-slate-950 border border-slate-850 p-2 rounded-xl text-xs text-white focus:outline-none"
+                  />
+                </div>
                 <div>
                   <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Destination Location</label>
                   <select
@@ -1035,13 +1141,13 @@ export default function QuotationsTab({
                     onChange={(e) => setDestination(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-850 p-2 rounded-xl text-xs text-slate-300 focus:outline-none capitalize"
                   >
-                    {activeDestinations.length > 0 ? (
-                      activeDestinations.map(d => (
-                        <option key={d.id} value={d.value}>{d.name}</option>
-                      ))
-                    ) : (
-                      <option value="kodaikanal">Kodaikanal</option>
-                    )}
+                    <option value="kodaikanal">Kodaikanal</option>
+                    <option value="ooty">Ooty</option>
+                    <option value="coorg">Coorg</option>
+                    <option value="munnar">Munnar</option>
+                    <option value="mysore">Mysore</option>
+                    <option value="alleppey">Alleppey</option>
+                    <option value="pondicherry">Pondicherry</option>
                   </select>
                 </div>
                 <div>
@@ -1208,7 +1314,6 @@ export default function QuotationsTab({
 
             {/* List of current line items */}
             <div className="border border-slate-850 rounded-xl overflow-hidden text-xs">
-             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-950/50 text-[9px] uppercase font-black tracking-wider text-slate-400">
                   <tr>
@@ -1248,7 +1353,6 @@ export default function QuotationsTab({
                   )}
                 </tbody>
               </table>
-             </div>
             </div>
 
             {/* T&C template pickers & totals */}
