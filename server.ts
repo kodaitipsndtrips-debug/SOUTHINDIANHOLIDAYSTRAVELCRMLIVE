@@ -424,66 +424,84 @@ const INITIAL_DB = {
 let db = { ...INITIAL_DB };
 
 async function readDb() {
-  try {
-    await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS crm_state (
-        id INT PRIMARY KEY,
-        data JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
+  const maxAttempts = 5;
+  let lastErr: any = null;
 
-    const result = await pgPool.query("SELECT data FROM crm_state WHERE id = 1");
-    let loadedDb: any = result.rows.length > 0 ? result.rows[0].data : null;
-    const isFirstBoot = result.rows.length === 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await pgPool.query(`
+        CREATE TABLE IF NOT EXISTS crm_state (
+          id INT PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `);
 
-    if (!loadedDb || typeof loadedDb !== "object") {
-      loadedDb = JSON.parse(JSON.stringify(INITIAL_DB));
-    }
+      const result = await pgPool.query("SELECT data FROM crm_state WHERE id = 1");
+      let loadedDb: any = result.rows.length > 0 ? result.rows[0].data : null;
+      const isFirstBoot = result.rows.length === 0;
 
-    db = loadedDb;
-    let updated = isFirstBoot;
+      if (!loadedDb || typeof loadedDb !== "object") {
+        loadedDb = JSON.parse(JSON.stringify(INITIAL_DB));
+      }
 
-    // Upgrade database schema dynamically with fallback default values and type enforcement
-    const keys = Object.keys(INITIAL_DB) as Array<keyof typeof INITIAL_DB>;
-    for (const key of keys) {
-      const initialVal = INITIAL_DB[key];
-      const currentVal = db[key];
+      db = loadedDb;
+      let updated = isFirstBoot;
 
-      if (currentVal === undefined || currentVal === null) {
-        (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
-        updated = true;
-      } else if (Array.isArray(initialVal)) {
-        if (!Array.isArray(currentVal)) {
-          console.warn(`Database key "${key}" was expected to be an array, but got ${typeof currentVal}. Fixing.`);
+      // Upgrade database schema dynamically with fallback default values and type enforcement
+      const keys = Object.keys(INITIAL_DB) as Array<keyof typeof INITIAL_DB>;
+      for (const key of keys) {
+        const initialVal = INITIAL_DB[key];
+        const currentVal = db[key];
+
+        if (currentVal === undefined || currentVal === null) {
           (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
           updated = true;
-        }
-      } else if (typeof initialVal === "object") {
-        if (typeof currentVal !== "object") {
-          console.warn(`Database key "${key}" was expected to be an object, but got ${typeof currentVal}. Fixing.`);
-          (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
-          updated = true;
-        } else {
-          // Deep-merge object keys if any are missing
-          const subKeys = Object.keys(initialVal);
-          for (const subKey of subKeys) {
-            if ((currentVal as any)[subKey] === undefined || (currentVal as any)[subKey] === null) {
-              (currentVal as any)[subKey] = (initialVal as any)[subKey];
-              updated = true;
+        } else if (Array.isArray(initialVal)) {
+          if (!Array.isArray(currentVal)) {
+            console.warn(`Database key "${key}" was expected to be an array, but got ${typeof currentVal}. Fixing.`);
+            (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
+            updated = true;
+          }
+        } else if (typeof initialVal === "object") {
+          if (typeof currentVal !== "object") {
+            console.warn(`Database key "${key}" was expected to be an object, but got ${typeof currentVal}. Fixing.`);
+            (db as any)[key] = JSON.parse(JSON.stringify(initialVal));
+            updated = true;
+          } else {
+            // Deep-merge object keys if any are missing
+            const subKeys = Object.keys(initialVal);
+            for (const subKey of subKeys) {
+              if ((currentVal as any)[subKey] === undefined || (currentVal as any)[subKey] === null) {
+                (currentVal as any)[subKey] = (initialVal as any)[subKey];
+                updated = true;
+              }
             }
           }
         }
       }
-    }
 
-    if (updated) {
-      await writeDb();
+      if (updated) {
+        await writeDb();
+      }
+      return; // success — stop retrying
+    } catch (err) {
+      lastErr = err;
+      console.error(`Error reading from database (attempt ${attempt}/${maxAttempts})`, err);
+      if (attempt < maxAttempts) {
+        // Back off before retrying — covers transient cold-start / pooler connection blips
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+      }
     }
-  } catch (err) {
-    console.error("Error reading from database", err);
-    db = JSON.parse(JSON.stringify(INITIAL_DB));
   }
+
+  // Every attempt failed. Do NOT fall back to blank seed data here — doing so would
+  // let the server continue running, and the very next write (e.g. a login updating
+  // lastLogin) would permanently overwrite the real database with blank data. It is
+  // far safer to refuse to start and force a real fix / restart than to silently
+  // destroy production data on a transient connection hiccup.
+  console.error("FATAL: Could not read from the database after multiple attempts. Refusing to start to avoid overwriting existing data with blank seed data.", lastErr);
+  process.exit(1);
 }
 
 async function writeDb() {
@@ -2207,9 +2225,24 @@ dbReady.then(() => {
     });
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("index.html")) {
+          // Never let index.html be cached — it's the entry point that
+          // references the current hashed JS/CSS filenames after each deploy.
+          // Without this, some mobile browsers (and CDNs) can keep serving an
+          // old index.html pointing at an old bundle long after a fix ships.
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        } else {
+          // Hashed asset filenames (e.g. index-abc123.js) are safe to cache
+          // aggressively — the filename itself changes whenever the content does.
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      }
+    }));
 
     app.get("*", async (req: Request, res: Response) => {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(distPath, "index.html"));
     });
 
