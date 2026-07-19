@@ -110,7 +110,7 @@ export default function Sidebar({
       )}
 
       <aside 
-        className={`fixed inset-y-0 left-0 lg:static lg:flex flex-col bg-slate-950 border-r border-slate-800/80 h-full flex-shrink-0 select-none z-50 transition-all duration-300 ease-in-out ${
+        className={`fixed inset-y-0 left-0 flex flex-col lg:static bg-slate-950 border-r border-slate-800/80 h-full flex-shrink-0 select-none z-50 transition-all duration-300 ease-in-out ${
           sidebarOpen 
             ? "translate-x-0 w-64" 
             : "-translate-x-full lg:translate-x-0 " + (isCollapsed ? "lg:w-20" : "lg:w-64")
