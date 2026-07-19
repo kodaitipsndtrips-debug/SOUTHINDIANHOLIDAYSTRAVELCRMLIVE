@@ -134,14 +134,50 @@ export default function SettingsTab({
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const json = JSON.parse(event.target?.result as string);
+        const fileContent = event.target?.result as string;
+        
+        // Failsafe check: Detect if user mistakenly uploaded a SQL export
+        if (fileContent.trim().toUpperCase().startsWith("CREATE TABLE") || fileContent.trim().toUpperCase().startsWith("--") || fileContent.trim().toUpperCase().startsWith("INSERT INTO")) {
+          alert("Error: You have uploaded a PostgreSQL / Supabase SQL backup file. This interface requires the JSON backup file exported from this CRM app. Please select the correct '.json' file.");
+          setImporting(false);
+          return;
+        }
+
+        let json;
+        try {
+          json = JSON.parse(fileContent);
+        } catch (parseErr: any) {
+          console.error("JSON Syntax Error:", parseErr);
+          alert(`Parsing JSON backup failed. The file is not a valid JSON document.\n\nDetails: ${parseErr.message}`);
+          setImporting(false);
+          return;
+        }
+
         if (json && json.users) {
           const res = await fetch("/api/backup/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(json)
           });
-          const result = await res.json();
+          
+          if (!res.ok) {
+            const errorText = await res.text();
+            console.error(`Server error during import (Status ${res.status}):`, errorText);
+            alert(`Failed to restore: Server returned HTTP ${res.status}\n\nDetails: ${errorText.substring(0, 300)}`);
+            setImporting(false);
+            return;
+          }
+
+          let result;
+          try {
+            result = await res.json();
+          } catch (jsonErr: any) {
+            console.error("Failed to parse server response as JSON:", jsonErr);
+            alert("Database import completed, but server did not return a valid JSON success code.");
+            setImporting(false);
+            return;
+          }
+
           if (result.success) {
             onImportBackup(json);
             alert("Database restored successfully! The app will refresh with imported states.");
@@ -150,10 +186,11 @@ export default function SettingsTab({
             alert("Failed to restore: " + result.message);
           }
         } else {
-          alert("Invalid backup file structure.");
+          alert("Invalid backup file structure: Missing 'users' table or not a CRM backup JSON file.");
         }
-      } catch (err) {
-        alert("Parsing JSON backup failed.");
+      } catch (err: any) {
+        console.error("Unhandled backup import error:", err);
+        alert(`An error occurred while importing the backup:\n${err?.message || err}`);
       } finally {
         setImporting(false);
       }
