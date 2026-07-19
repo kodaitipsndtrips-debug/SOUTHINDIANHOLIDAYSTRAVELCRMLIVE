@@ -4,6 +4,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
 import { WebSocketServer, WebSocket } from "ws";
+import { Pool } from "pg";
 
 const app = express();
 const PORT = 3000;
@@ -12,14 +13,23 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure directories exist
-const DATA_DIR = path.join(process.cwd(), "data");
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-const DB_PATH = path.join(DATA_DIR, "db.json");
+// Postgres connection pool — this replaces the old flat-file data/db.json store.
+// Supabase (and most managed Postgres providers) require SSL; rejectUnauthorized
+// is disabled here because these providers use certificates not in Node's default
+// trust store — this matches Supabase's own documented connection instructions.
+if (!process.env.DATABASE_URL) {
+  console.error("FATAL: DATABASE_URL environment variable is not set. The server cannot start without a database connection.");
+  process.exit(1);
+}
+const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL.includes("localhost") ? false : { rejectUnauthorized: false }
+});
 
 // Multer Config
 const storage = multer.diskStorage({
@@ -413,24 +423,26 @@ const INITIAL_DB = {
 // Database state accessor
 let db = { ...INITIAL_DB };
 
-function readDb() {
+async function readDb() {
   try {
-    let loadedDb: any = null;
-    if (fs.existsSync(DB_PATH)) {
-      try {
-        const fileData = fs.readFileSync(DB_PATH, "utf-8");
-        loadedDb = JSON.parse(fileData);
-      } catch (parseErr) {
-        console.error("Failed to parse db.json, using INITIAL_DB", parseErr);
-      }
-    }
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS crm_state (
+        id INT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+
+    const result = await pgPool.query("SELECT data FROM crm_state WHERE id = 1");
+    let loadedDb: any = result.rows.length > 0 ? result.rows[0].data : null;
+    const isFirstBoot = result.rows.length === 0;
 
     if (!loadedDb || typeof loadedDb !== "object") {
       loadedDb = JSON.parse(JSON.stringify(INITIAL_DB));
     }
 
     db = loadedDb;
-    let updated = false;
+    let updated = isFirstBoot;
 
     // Upgrade database schema dynamically with fallback default values and type enforcement
     const keys = Object.keys(INITIAL_DB) as Array<keyof typeof INITIAL_DB>;
@@ -466,27 +478,32 @@ function readDb() {
     }
 
     if (updated) {
-      writeDb();
+      await writeDb();
     }
   } catch (err) {
-    console.error("Error reading db.json", err);
+    console.error("Error reading from database", err);
     db = JSON.parse(JSON.stringify(INITIAL_DB));
   }
 }
 
-function writeDb() {
+async function writeDb() {
   try {
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+    await pgPool.query(
+      `INSERT INTO crm_state (id, data, updated_at) VALUES (1, $1, now())
+       ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = now()`,
+      [JSON.stringify(db)]
+    );
   } catch (err) {
-    console.error("Error writing db.json", err);
+    console.error("Error writing to database", err);
   }
 }
 
-// Initialize db
-readDb();
+// Initialize db — the rest of server startup (below, at the bottom of this file)
+// waits on this promise before accepting any requests.
+const dbReady = readDb();
 
 // Helper to log action
-function logAction(username: string, action: string) {
+async function logAction(username: string, action: string) {
   const logEntry = {
     id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     timestamp: new Date().toISOString(),
@@ -494,18 +511,18 @@ function logAction(username: string, action: string) {
     action
   };
   db.logs.unshift(logEntry);
-  writeDb();
+  await writeDb();
 }
 
 // ---------------- REST APIs ----------------
 
 // Health Check
-app.get("/api/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", mode: "failsafe-file-db", timestamp: new Date() });
+app.get("/api/health", async (req: Request, res: Response) => {
+  res.json({ status: "ok", mode: "postgres-db", timestamp: new Date() });
 });
 
 // Authentication Login
-app.post("/api/auth/login", (req: Request, res: Response) => {
+app.post("/api/auth/login", async (req: Request, res: Response) => {
   const { username, password } = req.body;
   const user = db.users.find(u => u.username === username && u.password === password);
   if (!user) {
@@ -515,8 +532,8 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
     return res.status(403).json({ success: false, message: "Your user account is deactivated. Contact administrator." });
   }
   user.lastLogin = new Date().toLocaleString();
-  writeDb();
-  logAction(username, `Logged in successfully from device`);
+  await writeDb();
+  await logAction(username, `Logged in successfully from device`);
   res.json({
     success: true,
     user: {
@@ -534,14 +551,14 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
 });
 
 // Settings API
-app.get("/api/settings", (req: Request, res: Response) => {
+app.get("/api/settings", async (req: Request, res: Response) => {
   res.json(db.settings);
 });
 
-const saveSettingsHandler = (req: Request, res: Response) => {
+const saveSettingsHandler = async (req: Request, res: Response) => {
   db.settings = { ...db.settings, ...req.body };
-  writeDb();
-  logAction("admin", "Updated CRM global system settings");
+  await writeDb();
+  await logAction("admin", "Updated CRM global system settings");
   res.json(db.settings);
 };
 
@@ -549,41 +566,41 @@ app.put("/api/settings", saveSettingsHandler);
 app.post("/api/settings", saveSettingsHandler);
 
 // Leads CRUD
-app.get("/api/leads", (req: Request, res: Response) => {
+app.get("/api/leads", async (req: Request, res: Response) => {
   res.json(db.leads);
 });
 
-app.post("/api/leads", (req: Request, res: Response) => {
+app.post("/api/leads", async (req: Request, res: Response) => {
   const newLead = req.body;
   newLead.id = newLead.id || `SIH-LD-${Math.floor(10000 + Math.random() * 90000)}`;
   newLead.timeline = newLead.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Lead registered in South Indian Holidays system" }];
   newLead.followUpHistory = newLead.followUpHistory || [];
   db.leads.unshift(newLead);
-  writeDb();
-  logAction("system", `Created new lead: ${newLead.name} (${newLead.destination})`);
+  await writeDb();
+  await logAction("system", `Created new lead: ${newLead.name} (${newLead.destination})`);
   res.status(201).json(newLead);
 });
 
-app.put("/api/leads/:id", (req: Request, res: Response) => {
+app.put("/api/leads/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.leads.findIndex(l => l.id === id);
   if (idx !== -1) {
     db.leads[idx] = { ...db.leads[idx], ...req.body };
-    writeDb();
-    logAction("system", `Modified lead information for customer ${db.leads[idx].name}`);
+    await writeDb();
+    await logAction("system", `Modified lead information for customer ${db.leads[idx].name}`);
     res.json(db.leads[idx]);
   } else {
     res.status(404).json({ error: "Lead not found" });
   }
 });
 
-app.delete("/api/leads/:id", (req: Request, res: Response) => {
+app.delete("/api/leads/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const lead = db.leads.find(l => l.id === id);
   if (lead) {
     db.leads = db.leads.filter(l => l.id !== id);
-    writeDb();
-    logAction("admin", `Permanently deleted customer lead: ${lead.name}`);
+    await writeDb();
+    await logAction("admin", `Permanently deleted customer lead: ${lead.name}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Lead not found" });
@@ -591,7 +608,7 @@ app.delete("/api/leads/:id", (req: Request, res: Response) => {
 });
 
 // Direct Follow-ups Global REST APIs
-app.get("/api/followups", (req: Request, res: Response) => {
+app.get("/api/followups", async (req: Request, res: Response) => {
   const { filter, staff, status } = req.query;
   const todayStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
 
@@ -642,7 +659,7 @@ app.get("/api/followups", (req: Request, res: Response) => {
   res.json(list);
 });
 
-app.post("/api/followups", (req: Request, res: Response) => {
+app.post("/api/followups", async (req: Request, res: Response) => {
   const { leadId, date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
 
   if (!date || !time || !notes) {
@@ -679,12 +696,12 @@ app.post("/api/followups", (req: Request, res: Response) => {
     text: `Created follow-up [${type}] scheduled by ${staff || "admin"}. Notes: ${notes}`
   });
 
-  writeDb();
-  logAction("system", `Scheduled follow-up for lead ${lead.name}`);
+  await writeDb();
+  await logAction("system", `Scheduled follow-up for lead ${lead.name}`);
   res.status(201).json(fu);
 });
 
-app.put("/api/followups/:id", (req: Request, res: Response) => {
+app.put("/api/followups/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { date, time, type, priority, status, notes, staff, nextFollowUp } = req.body;
 
@@ -730,8 +747,8 @@ app.put("/api/followups/:id", (req: Request, res: Response) => {
         text: `Updated follow-up status to ${status || foundFu.status}. Notes: ${notes || ""}`
       });
 
-      writeDb();
-      logAction("system", `Updated follow-up ${id} on lead ${lead.name}`);
+      await writeDb();
+      await logAction("system", `Updated follow-up ${id} on lead ${lead.name}`);
       foundFu = updatedFu;
       break;
     }
@@ -744,7 +761,7 @@ app.put("/api/followups/:id", (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/followups/:id", (req: Request, res: Response) => {
+app.delete("/api/followups/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   let deleted = false;
 
@@ -758,8 +775,8 @@ app.delete("/api/followups/:id", (req: Request, res: Response) => {
         timestamp: new Date().toLocaleDateString("en-IN"),
         text: `Deleted scheduling follow-up item ${id}`
       });
-      writeDb();
-      logAction("system", `Deleted follow-up ${id} from lead ${lead.name}`);
+      await writeDb();
+      await logAction("system", `Deleted follow-up ${id} from lead ${lead.name}`);
       deleted = true;
       break;
     }
@@ -773,7 +790,7 @@ app.delete("/api/followups/:id", (req: Request, res: Response) => {
 });
 
 // Follow-ups Sub-routes
-app.post("/api/leads/:leadId/followups", (req: Request, res: Response) => {
+app.post("/api/leads/:leadId/followups", async (req: Request, res: Response) => {
   const { leadId } = req.params;
   const lead = db.leads.find(l => l.id === leadId);
   if (!lead) return res.status(404).json({ error: "Lead not found" });
@@ -786,12 +803,12 @@ app.post("/api/leads/:leadId/followups", (req: Request, res: Response) => {
     timestamp: new Date().toLocaleDateString('en-IN'),
     text: `Scheduled new follow-up [${fu.type}]: ${fu.remarks}`
   });
-  writeDb();
-  logAction("system", `Added follow-up scheduled for lead ${lead.name}`);
+  await writeDb();
+  await logAction("system", `Added follow-up scheduled for lead ${lead.name}`);
   res.status(201).json(lead);
 });
 
-app.put("/api/leads/:leadId/followups/:fuId", (req: Request, res: Response) => {
+app.put("/api/leads/:leadId/followups/:fuId", async (req: Request, res: Response) => {
   const { leadId, fuId } = req.params;
   const lead = db.leads.find(l => l.id === leadId);
   if (!lead) return res.status(404).json({ error: "Lead not found" });
@@ -803,15 +820,15 @@ app.put("/api/leads/:leadId/followups/:fuId", (req: Request, res: Response) => {
       timestamp: new Date().toLocaleDateString('en-IN'),
       text: `Updated follow-up status to ${lead.followUpHistory[fuIdx].status}`
     });
-    writeDb();
-    logAction("system", `Updated follow-up details on lead ${lead.name}`);
+    await writeDb();
+    await logAction("system", `Updated follow-up details on lead ${lead.name}`);
     res.json(lead);
   } else {
     res.status(404).json({ error: "Followup not found" });
   }
 });
 
-app.delete("/api/leads/:leadId/followups/:fuId", (req: Request, res: Response) => {
+app.delete("/api/leads/:leadId/followups/:fuId", async (req: Request, res: Response) => {
   const { leadId, fuId } = req.params;
   const lead = db.leads.find(l => l.id === leadId);
   if (!lead) return res.status(404).json({ error: "Lead not found" });
@@ -821,44 +838,44 @@ app.delete("/api/leads/:leadId/followups/:fuId", (req: Request, res: Response) =
     timestamp: new Date().toLocaleDateString('en-IN'),
     text: `Deleted scheduling follow-up item`
   });
-  writeDb();
+  await writeDb();
   res.json(lead);
 });
 
 // Packages CRUD (Newly added per user requirement)
-app.get("/api/packages", (req: Request, res: Response) => {
+app.get("/api/packages", async (req: Request, res: Response) => {
   res.json(db.packages);
 });
 
-app.post("/api/packages", (req: Request, res: Response) => {
+app.post("/api/packages", async (req: Request, res: Response) => {
   const newPkg = req.body;
   newPkg.id = newPkg.id || `PKG-${Math.floor(10000 + Math.random() * 90000)}`;
   db.packages.unshift(newPkg);
-  writeDb();
-  logAction("system", `Created standard tour package template: ${newPkg.name}`);
+  await writeDb();
+  await logAction("system", `Created standard tour package template: ${newPkg.name}`);
   res.status(201).json(newPkg);
 });
 
-app.put("/api/packages/:id", (req: Request, res: Response) => {
+app.put("/api/packages/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.packages.findIndex(p => p.id === id);
   if (idx !== -1) {
     db.packages[idx] = { ...db.packages[idx], ...req.body };
-    writeDb();
-    logAction("system", `Updated tour package specifications: ${db.packages[idx].name}`);
+    await writeDb();
+    await logAction("system", `Updated tour package specifications: ${db.packages[idx].name}`);
     res.json(db.packages[idx]);
   } else {
     res.status(404).json({ error: "Package not found" });
   }
 });
 
-app.delete("/api/packages/:id", (req: Request, res: Response) => {
+app.delete("/api/packages/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const pkg = db.packages.find(p => p.id === id);
   if (pkg) {
     db.packages = db.packages.filter(p => p.id !== id);
-    writeDb();
-    logAction("admin", `Permanently removed package from library: ${pkg.name}`);
+    await writeDb();
+    await logAction("admin", `Permanently removed package from library: ${pkg.name}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Package not found" });
@@ -866,11 +883,11 @@ app.delete("/api/packages/:id", (req: Request, res: Response) => {
 });
 
 // Bookings CRUD
-app.get("/api/bookings", (req: Request, res: Response) => {
+app.get("/api/bookings", async (req: Request, res: Response) => {
   res.json(db.bookings);
 });
 
-app.post("/api/bookings", (req: Request, res: Response) => {
+app.post("/api/bookings", async (req: Request, res: Response) => {
   const booking = req.body;
   booking.id = booking.id || `SIH-BK-2026-${Math.floor(1000 + Math.random() * 9000)}`;
   booking.timeline = booking.timeline || [{ timestamp: new Date().toLocaleDateString('en-IN'), text: "Manual booking created and vouchers locked." }];
@@ -891,25 +908,25 @@ app.post("/api/bookings", (req: Request, res: Response) => {
   };
   db.payments.unshift(outstandingLedger);
 
-  writeDb();
-  logAction("system", `Created travel reservation for: ${booking.customerName} to ${booking.destination}`);
+  await writeDb();
+  await logAction("system", `Created travel reservation for: ${booking.customerName} to ${booking.destination}`);
   res.status(201).json({ booking, payment: outstandingLedger });
 });
 
-app.put("/api/bookings/:id", (req: Request, res: Response) => {
+app.put("/api/bookings/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.bookings.findIndex(b => b.id === id);
   if (idx !== -1) {
     db.bookings[idx] = { ...db.bookings[idx], ...req.body };
-    writeDb();
-    logAction("system", `Updated reservation parameters: ${db.bookings[idx].id}`);
+    await writeDb();
+    await logAction("system", `Updated reservation parameters: ${db.bookings[idx].id}`);
     res.json(db.bookings[idx]);
   } else {
     res.status(404).json({ error: "Booking not found" });
   }
 });
 
-app.delete("/api/bookings/:id", (req: Request, res: Response) => {
+app.delete("/api/bookings/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const booking = db.bookings.find(b => b.id === id);
   if (booking) {
@@ -917,8 +934,8 @@ app.delete("/api/bookings/:id", (req: Request, res: Response) => {
     db.payments = db.payments.filter(p => p.bookingId !== id);
     db.vouchers = db.vouchers.filter(v => v.bookingId !== id);
     db.itineraries = db.itineraries.filter(i => i.bookingId !== id);
-    writeDb();
-    logAction("admin", `Deleted reservation, ledger, and all tied documents for booking: ${booking.id}`);
+    await writeDb();
+    await logAction("admin", `Deleted reservation, ledger, and all tied documents for booking: ${booking.id}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Booking not found" });
@@ -926,45 +943,45 @@ app.delete("/api/bookings/:id", (req: Request, res: Response) => {
 });
 
 // Vouchers CRUD
-app.get("/api/vouchers", (req: Request, res: Response) => {
+app.get("/api/vouchers", async (req: Request, res: Response) => {
   res.json(db.vouchers);
 });
 
-app.post("/api/vouchers", (req: Request, res: Response) => {
+app.post("/api/vouchers", async (req: Request, res: Response) => {
   const voucher = req.body;
   voucher.id = voucher.id || `HBV-${Math.floor(10000 + Math.random() * 90000)}`;
   db.vouchers.unshift(voucher);
-  writeDb();
-  logAction("operations", `Generated professional hotel voucher ${voucher.id} for ${voucher.guestName}`);
+  await writeDb();
+  await logAction("operations", `Generated professional hotel voucher ${voucher.id} for ${voucher.guestName}`);
   res.status(201).json(voucher);
 });
 
-app.put("/api/vouchers/:id", (req: Request, res: Response) => {
+app.put("/api/vouchers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.vouchers.findIndex(v => v.id === id);
   if (idx !== -1) {
     db.vouchers[idx] = { ...db.vouchers[idx], ...req.body };
-    writeDb();
-    logAction("operations", `Modified voucher variables on ${db.vouchers[idx].id}`);
+    await writeDb();
+    await logAction("operations", `Modified voucher variables on ${db.vouchers[idx].id}`);
     res.json(db.vouchers[idx]);
   } else {
     res.status(404).json({ error: "Voucher not found" });
   }
 });
 
-app.delete("/api/vouchers/:id", (req: Request, res: Response) => {
+app.delete("/api/vouchers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.vouchers = db.vouchers.filter(v => v.id !== id);
-  writeDb();
+  await writeDb();
   res.json({ success: true });
 });
 
 // Quotations CRUD
-app.get("/api/quotations", (req: Request, res: Response) => {
+app.get("/api/quotations", async (req: Request, res: Response) => {
   res.json(db.quotations || []);
 });
 
-app.post("/api/quotations", (req: Request, res: Response) => {
+app.post("/api/quotations", async (req: Request, res: Response) => {
   try {
     const quotation = req.body;
     quotation.id = quotation.id || `QT-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -977,16 +994,16 @@ app.post("/api/quotations", (req: Request, res: Response) => {
     
     db.quotations = db.quotations || [];
     db.quotations.unshift(quotation);
-    writeDb();
+    await writeDb();
     
-    logAction("operations", `Created quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+    await logAction("operations", `Created quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
     res.status(201).json(quotation);
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Failed to create quotation" });
   }
 });
 
-app.put("/api/quotations/:id", (req: Request, res: Response) => {
+app.put("/api/quotations/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.quotations = db.quotations || [];
@@ -997,8 +1014,8 @@ app.put("/api/quotations/:id", (req: Request, res: Response) => {
         ...req.body, 
         updatedAt: new Date().toISOString() 
       };
-      writeDb();
-      logAction("operations", `Updated quotation variables on ${db.quotations[idx].quotationNumber}`);
+      await writeDb();
+      await logAction("operations", `Updated quotation variables on ${db.quotations[idx].quotationNumber}`);
       res.json(db.quotations[idx]);
     } else {
       res.status(404).json({ error: "Quotation not found" });
@@ -1008,15 +1025,15 @@ app.put("/api/quotations/:id", (req: Request, res: Response) => {
   }
 });
 
-app.delete("/api/quotations/:id", (req: Request, res: Response) => {
+app.delete("/api/quotations/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.quotations = db.quotations || [];
     const quotation = db.quotations.find((q: any) => q.id === id);
     if (quotation) {
       db.quotations = db.quotations.filter((q: any) => q.id !== id);
-      writeDb();
-      logAction("operations", `Deleted quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
+      await writeDb();
+      await logAction("operations", `Deleted quotation ${quotation.quotationNumber} for ${quotation.customerName}`);
       res.json({ success: true });
     } else {
       res.status(404).json({ error: "Quotation not found" });
@@ -1027,7 +1044,7 @@ app.delete("/api/quotations/:id", (req: Request, res: Response) => {
 });
 
 // Save PDF for Quotation
-app.post("/api/quotations/:id/pdf", upload.single("file"), (req: Request, res: Response) => {
+app.post("/api/quotations/:id/pdf", upload.single("file"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.quotations = db.quotations || [];
@@ -1037,8 +1054,8 @@ app.post("/api/quotations/:id/pdf", upload.single("file"), (req: Request, res: R
         const fileUrl = `/uploads/${req.file.filename}`;
         db.quotations[idx].pdfPath = fileUrl;
         db.quotations[idx].updatedAt = new Date().toISOString();
-        writeDb();
-        logAction("operations", `Uploaded PDF file for quotation ${db.quotations[idx].quotationNumber}`);
+        await writeDb();
+        await logAction("operations", `Uploaded PDF file for quotation ${db.quotations[idx].quotationNumber}`);
         res.json({ success: true, pdfPath: fileUrl });
       } else {
         res.status(400).json({ error: "No PDF file provided" });
@@ -1052,7 +1069,7 @@ app.post("/api/quotations/:id/pdf", upload.single("file"), (req: Request, res: R
 });
 
 // Share Quotation via WhatsApp
-app.post("/api/quotations/:id/share-whatsapp", (req: Request, res: Response) => {
+app.post("/api/quotations/:id/share-whatsapp", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.quotations = db.quotations || [];
@@ -1072,9 +1089,9 @@ app.post("/api/quotations/:id/share-whatsapp", (req: Request, res: Response) => 
       
       q.status = "Sent";
       q.updatedAt = new Date().toISOString();
-      writeDb();
+      await writeDb();
       
-      logAction("operations", `Shared quotation ${q.quotationNumber} with ${q.customerName} via WhatsApp`);
+      await logAction("operations", `Shared quotation ${q.quotationNumber} with ${q.customerName} via WhatsApp`);
       
       res.json({ success: true, whatsappUrl, message });
     } else {
@@ -1086,7 +1103,7 @@ app.post("/api/quotations/:id/share-whatsapp", (req: Request, res: Response) => 
 });
 
 // Send Quotation via Email
-app.post("/api/quotations/:id/send-email", (req: Request, res: Response) => {
+app.post("/api/quotations/:id/send-email", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     db.quotations = db.quotations || [];
@@ -1097,9 +1114,9 @@ app.post("/api/quotations/:id/send-email", (req: Request, res: Response) => {
       
       q.status = "Sent";
       q.updatedAt = new Date().toISOString();
-      writeDb();
+      await writeDb();
       
-      logAction("operations", `Emailed quotation ${q.quotationNumber} with PDF attachment to ${email}`);
+      await logAction("operations", `Emailed quotation ${q.quotationNumber} with PDF attachment to ${email}`);
       
       res.json({ success: true, message: `Email sent successfully to ${email}` });
     } else {
@@ -1111,43 +1128,43 @@ app.post("/api/quotations/:id/send-email", (req: Request, res: Response) => {
 });
 
 // Itineraries CRUD
-app.get("/api/itineraries", (req: Request, res: Response) => {
+app.get("/api/itineraries", async (req: Request, res: Response) => {
   res.json(db.itineraries || []);
 });
 
-app.post("/api/itineraries", (req: Request, res: Response) => {
+app.post("/api/itineraries", async (req: Request, res: Response) => {
   const itinerary = req.body;
   itinerary.id = itinerary.id || `ITN-${Math.floor(10000 + Math.random() * 90000)}`;
   itinerary.createdAt = itinerary.createdAt || new Date().toLocaleDateString("en-IN");
   db.itineraries = db.itineraries || [];
   db.itineraries.unshift(itinerary);
-  writeDb();
-  logAction("operations", `Created tour guide itinerary plan for: ${itinerary.customerName || itinerary.id}`);
+  await writeDb();
+  await logAction("operations", `Created tour guide itinerary plan for: ${itinerary.customerName || itinerary.id}`);
   res.status(201).json(itinerary);
 });
 
-app.put("/api/itineraries/:id", (req: Request, res: Response) => {
+app.put("/api/itineraries/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.itineraries = db.itineraries || [];
   const idx = db.itineraries.findIndex((i: any) => i.id === id);
   if (idx !== -1) {
     db.itineraries[idx] = { ...db.itineraries[idx], ...req.body };
-    writeDb();
-    logAction("operations", `Updated itinerary for: ${db.itineraries[idx].customerName || id}`);
+    await writeDb();
+    await logAction("operations", `Updated itinerary for: ${db.itineraries[idx].customerName || id}`);
     res.json(db.itineraries[idx]);
   } else {
     res.status(404).json({ error: "Itinerary not found" });
   }
 });
 
-app.delete("/api/itineraries/:id", (req: Request, res: Response) => {
+app.delete("/api/itineraries/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.itineraries = db.itineraries || [];
   const itinerary = db.itineraries.find((i: any) => i.id === id);
   if (itinerary) {
     db.itineraries = db.itineraries.filter((i: any) => i.id !== id);
-    writeDb();
-    logAction("admin", `Deleted itinerary for: ${itinerary.customerName || id}`);
+    await writeDb();
+    await logAction("admin", `Deleted itinerary for: ${itinerary.customerName || id}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Itinerary not found" });
@@ -1155,11 +1172,11 @@ app.delete("/api/itineraries/:id", (req: Request, res: Response) => {
 });
 
 // Payments Ledger CRUD
-app.get("/api/payments", (req: Request, res: Response) => {
+app.get("/api/payments", async (req: Request, res: Response) => {
   res.json(db.payments);
 });
 
-app.post("/api/payments/:id/installments", (req: Request, res: Response) => {
+app.post("/api/payments/:id/installments", async (req: Request, res: Response) => {
   const { id } = req.params;
   const ledger = db.payments.find(p => p.id === id);
   if (!ledger) return res.status(404).json({ error: "Ledger not found" });
@@ -1181,203 +1198,203 @@ app.post("/api/payments/:id/installments", (req: Request, res: Response) => {
     ledger.status = "Unpaid";
   }
 
-  writeDb();
-  logAction("accountant", `Recorded payment voucher entry of ₹${installment.amount} for ${ledger.customerName}`);
+  await writeDb();
+  await logAction("accountant", `Recorded payment voucher entry of ₹${installment.amount} for ${ledger.customerName}`);
   res.json(ledger);
 });
 
 // Expenses CRUD
-app.get("/api/expenses", (req: Request, res: Response) => {
+app.get("/api/expenses", async (req: Request, res: Response) => {
   res.json(db.expenses);
 });
 
-app.post("/api/expenses", (req: Request, res: Response) => {
+app.post("/api/expenses", async (req: Request, res: Response) => {
   const exp = req.body;
   exp.id = exp.id || `EXP-${Math.floor(1000 + Math.random() * 9000)}`;
   db.expenses.unshift(exp);
-  writeDb();
-  logAction("accountant", `Logged cash outflow expense for: ${exp.description}`);
+  await writeDb();
+  await logAction("accountant", `Logged cash outflow expense for: ${exp.description}`);
   res.status(201).json(exp);
 });
 
-app.delete("/api/expenses/:id", (req: Request, res: Response) => {
+app.delete("/api/expenses/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.expenses = db.expenses.filter(e => e.id !== id);
-  writeDb();
+  await writeDb();
   res.json({ success: true });
 });
 
 // Catalog Products
-app.get("/api/products", (req: Request, res: Response) => {
+app.get("/api/products", async (req: Request, res: Response) => {
   res.json(db.products);
 });
 
-app.post("/api/products", (req: Request, res: Response) => {
+app.post("/api/products", async (req: Request, res: Response) => {
   const product = req.body;
   product.id = product.id || `p-${Date.now()}`;
   db.products.push(product);
-  writeDb();
+  await writeDb();
   res.status(201).json(product);
 });
 
 // Hotels
-app.get("/api/hotels", (req: Request, res: Response) => {
+app.get("/api/hotels", async (req: Request, res: Response) => {
   res.json(db.hotels);
 });
 
-app.post("/api/hotels", (req: Request, res: Response) => {
+app.post("/api/hotels", async (req: Request, res: Response) => {
   const hotel = req.body;
   hotel.id = hotel.id || `H-${Math.floor(10 + Math.random() * 90)}`;
   db.hotels.push(hotel);
-  writeDb();
+  await writeDb();
   res.status(201).json(hotel);
 });
 
-app.put("/api/hotels/:id", (req: Request, res: Response) => {
+app.put("/api/hotels/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.hotels.findIndex((h: any) => h.id === id);
   if (idx === -1) return res.status(404).json({ error: "Hotel not found" });
   db.hotels[idx] = { ...db.hotels[idx], ...req.body, id };
-  writeDb();
+  await writeDb();
   res.json(db.hotels[idx]);
 });
 
-app.delete("/api/hotels/:id", (req: Request, res: Response) => {
+app.delete("/api/hotels/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.hotels = db.hotels.filter((h: any) => h.id !== id);
-  writeDb();
+  await writeDb();
   res.json({ success: true });
 });
 
 // Drivers
-app.get("/api/drivers", (req: Request, res: Response) => {
+app.get("/api/drivers", async (req: Request, res: Response) => {
   res.json(db.drivers);
 });
 
-app.post("/api/drivers", (req: Request, res: Response) => {
+app.post("/api/drivers", async (req: Request, res: Response) => {
   const driver = req.body;
   driver.id = driver.id || `DRV-${Math.floor(10 + Math.random() * 90)}`;
   db.drivers.push(driver);
-  writeDb();
+  await writeDb();
   res.status(201).json(driver);
 });
 
-app.put("/api/drivers/:id", (req: Request, res: Response) => {
+app.put("/api/drivers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.drivers.findIndex((d: any) => d.id === id);
   if (idx === -1) return res.status(404).json({ error: "Driver not found" });
   db.drivers[idx] = { ...db.drivers[idx], ...req.body, id };
-  writeDb();
+  await writeDb();
   res.json(db.drivers[idx]);
 });
 
-app.delete("/api/drivers/:id", (req: Request, res: Response) => {
+app.delete("/api/drivers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.drivers = db.drivers.filter((d: any) => d.id !== id);
-  writeDb();
+  await writeDb();
   res.json({ success: true });
 });
 
 // Suppliers
-app.get("/api/suppliers", (req: Request, res: Response) => {
+app.get("/api/suppliers", async (req: Request, res: Response) => {
   res.json(db.suppliers);
 });
 
-app.post("/api/suppliers", (req: Request, res: Response) => {
+app.post("/api/suppliers", async (req: Request, res: Response) => {
   const supplier = req.body;
   supplier.id = supplier.id || `SUP-${Math.floor(10 + Math.random() * 90)}`;
   db.suppliers.push(supplier);
-  writeDb();
+  await writeDb();
   res.status(201).json(supplier);
 });
 
-app.put("/api/suppliers/:id", (req: Request, res: Response) => {
+app.put("/api/suppliers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.suppliers.findIndex((s: any) => s.id === id);
   if (idx === -1) return res.status(404).json({ error: "Supplier not found" });
   db.suppliers[idx] = { ...db.suppliers[idx], ...req.body, id };
-  writeDb();
+  await writeDb();
   res.json(db.suppliers[idx]);
 });
 
-app.delete("/api/suppliers/:id", (req: Request, res: Response) => {
+app.delete("/api/suppliers/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.suppliers = db.suppliers.filter((s: any) => s.id !== id);
-  writeDb();
+  await writeDb();
   res.json({ success: true });
 });
 
 // Destination Master
-app.get("/api/destinations", (req: Request, res: Response) => {
+app.get("/api/destinations", async (req: Request, res: Response) => {
   res.json(db.destinations || []);
 });
 
-app.post("/api/destinations", (req: Request, res: Response) => {
+app.post("/api/destinations", async (req: Request, res: Response) => {
   const dest = req.body;
   dest.id = dest.id || `DEST-${Date.now()}`;
   dest.value = (dest.value || dest.name || "").toString().trim().toLowerCase().replace(/\s+/g, "-");
   dest.status = dest.status || "Active";
   db.destinations = db.destinations || [];
   db.destinations.push(dest);
-  writeDb();
-  logAction("admin", `Added destination "${dest.name}" to Destination Master`);
+  await writeDb();
+  await logAction("admin", `Added destination "${dest.name}" to Destination Master`);
   res.status(201).json(dest);
 });
 
-app.put("/api/destinations/:id", (req: Request, res: Response) => {
+app.put("/api/destinations/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.destinations = db.destinations || [];
   const idx = db.destinations.findIndex((d: any) => d.id === id);
   if (idx === -1) return res.status(404).json({ error: "Destination not found" });
   db.destinations[idx] = { ...db.destinations[idx], ...req.body, id };
-  writeDb();
-  logAction("admin", `Updated destination "${db.destinations[idx].name}" in Destination Master`);
+  await writeDb();
+  await logAction("admin", `Updated destination "${db.destinations[idx].name}" in Destination Master`);
   res.json(db.destinations[idx]);
 });
 
-app.delete("/api/destinations/:id", (req: Request, res: Response) => {
+app.delete("/api/destinations/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.destinations = (db.destinations || []).filter((d: any) => d.id !== id);
-  writeDb();
-  logAction("admin", `Removed a destination from Destination Master`);
+  await writeDb();
+  await logAction("admin", `Removed a destination from Destination Master`);
   res.json({ success: true });
 });
 
 // Users
-app.get("/api/users", (req: Request, res: Response) => {
+app.get("/api/users", async (req: Request, res: Response) => {
   res.json(db.users);
 });
 
-app.post("/api/users", (req: Request, res: Response) => {
+app.post("/api/users", async (req: Request, res: Response) => {
   const user = req.body;
   user.id = user.id || `USR-${Math.floor(100 + Math.random() * 900)}`;
   user.lastLogin = "Never";
   db.users.push(user);
-  writeDb();
-  logAction("admin", `Created new backend credential profile: ${user.username}`);
+  await writeDb();
+  await logAction("admin", `Created new backend credential profile: ${user.username}`);
   res.status(201).json(user);
 });
 
-app.put("/api/users/:id", (req: Request, res: Response) => {
+app.put("/api/users/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.users.findIndex(u => u.id === id);
   if (idx !== -1) {
     db.users[idx] = { ...db.users[idx], ...req.body };
-    writeDb();
+    await writeDb();
     res.json(db.users[idx]);
   } else {
     res.status(404).json({ error: "User not found" });
   }
 });
 
-app.delete("/api/users/:id", (req: Request, res: Response) => {
+app.delete("/api/users/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const idx = db.users.findIndex(u => u.id === id);
   if (idx !== -1) {
     const deletedUser = db.users[idx];
     db.users.splice(idx, 1);
-    writeDb();
-    logAction("admin", `Deleted user account: ${deletedUser.username}`);
+    await writeDb();
+    await logAction("admin", `Deleted user account: ${deletedUser.username}`);
     res.json({ success: true, deleted: deletedUser });
   } else {
     res.status(404).json({ error: "User not found" });
@@ -1385,7 +1402,7 @@ app.delete("/api/users/:id", (req: Request, res: Response) => {
 });
 
 // Action Logs
-app.get("/api/logs", (req: Request, res: Response) => {
+app.get("/api/logs", async (req: Request, res: Response) => {
   res.json(db.logs);
 });
 
@@ -1732,7 +1749,7 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
 });
 
 // File upload endpoint
-app.post("/api/upload", upload.single("file"), (req: Request, res: Response) => {
+app.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
@@ -1741,74 +1758,74 @@ app.post("/api/upload", upload.single("file"), (req: Request, res: Response) => 
 });
 
 // WhatsApp API Endpoints
-app.get("/api/whatsapp/templates", (req: Request, res: Response) => {
+app.get("/api/whatsapp/templates", async (req: Request, res: Response) => {
   res.json(db.whatsappTemplates || []);
 });
 
-app.post("/api/whatsapp/templates", (req: Request, res: Response) => {
+app.post("/api/whatsapp/templates", async (req: Request, res: Response) => {
   const template = req.body;
   template.id = template.id || `wt-${Date.now()}`;
   db.whatsappTemplates = db.whatsappTemplates || [];
   db.whatsappTemplates.push(template);
-  writeDb();
-  logAction("system", `Created new WhatsApp message template: ${template.name}`);
+  await writeDb();
+  await logAction("system", `Created new WhatsApp message template: ${template.name}`);
   res.status(201).json(template);
 });
 
-app.put("/api/whatsapp/templates/:id", (req: Request, res: Response) => {
+app.put("/api/whatsapp/templates/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.whatsappTemplates = db.whatsappTemplates || [];
   const idx = db.whatsappTemplates.findIndex((t: any) => t.id === id);
   if (idx !== -1) {
     db.whatsappTemplates[idx] = { ...db.whatsappTemplates[idx], ...req.body };
-    writeDb();
-    logAction("system", `Updated WhatsApp template: ${db.whatsappTemplates[idx].name}`);
+    await writeDb();
+    await logAction("system", `Updated WhatsApp template: ${db.whatsappTemplates[idx].name}`);
     res.json(db.whatsappTemplates[idx]);
   } else {
     res.status(404).json({ error: "Template not found" });
   }
 });
 
-app.delete("/api/whatsapp/templates/:id", (req: Request, res: Response) => {
+app.delete("/api/whatsapp/templates/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   db.whatsappTemplates = db.whatsappTemplates || [];
   const template = db.whatsappTemplates.find((t: any) => t.id === id);
   if (template) {
     db.whatsappTemplates = db.whatsappTemplates.filter((t: any) => t.id !== id);
-    writeDb();
-    logAction("admin", `Deleted WhatsApp template: ${template.name}`);
+    await writeDb();
+    await logAction("admin", `Deleted WhatsApp template: ${template.name}`);
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Template not found" });
   }
 });
 
-app.get("/api/whatsapp/logs", (req: Request, res: Response) => {
+app.get("/api/whatsapp/logs", async (req: Request, res: Response) => {
   res.json(db.whatsappLogs || []);
 });
 
-app.post("/api/whatsapp/logs", (req: Request, res: Response) => {
+app.post("/api/whatsapp/logs", async (req: Request, res: Response) => {
   const log = req.body;
   log.id = log.id || `wl-${Date.now()}`;
   log.timestamp = log.timestamp || new Date().toISOString();
   db.whatsappLogs = db.whatsappLogs || [];
   db.whatsappLogs.unshift(log);
-  writeDb();
+  await writeDb();
   res.status(201).json(log);
 });
 
 // Backup System
-app.get("/api/backup/export", (req: Request, res: Response) => {
+app.get("/api/backup/export", async (req: Request, res: Response) => {
   res.json(db);
 });
 
-app.post("/api/backup/import", (req: Request, res: Response) => {
+app.post("/api/backup/import", async (req: Request, res: Response) => {
   try {
     const importedData = req.body;
     if (importedData && typeof importedData === "object" && importedData.users) {
       db = { ...INITIAL_DB, ...importedData };
-      writeDb();
-      logAction("admin", "Restored full CRM system backup manually");
+      await writeDb();
+      await logAction("admin", "Restored full CRM system backup manually");
       res.json({ success: true, message: "Backup imported and loaded successfully!" });
     } else {
       res.status(400).json({ success: false, message: "Invalid backup data structure" });
@@ -1895,7 +1912,7 @@ async function sendWhatsAppCloudMessage(to: string, messageText: string, attachm
 }
 
 // Create/Retrieve WhatsApp Conversation manually
-app.post("/api/whatsapp/conversations", (req: Request, res: Response) => {
+app.post("/api/whatsapp/conversations", async (req: Request, res: Response) => {
   const { customerName, mobile, assignedTo } = req.body;
   if (!customerName || !mobile) {
     return res.status(400).json({ error: "customerName and mobile are required" });
@@ -1920,7 +1937,7 @@ app.post("/api/whatsapp/conversations", (req: Request, res: Response) => {
       assignedTo: assignedTo || null
     };
     db.whatsappConversations.unshift(conv);
-    writeDb();
+    await writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
   }
 
@@ -1928,24 +1945,24 @@ app.post("/api/whatsapp/conversations", (req: Request, res: Response) => {
 });
 
 // WhatsApp Conversations List
-app.get("/api/whatsapp/conversations", (req: Request, res: Response) => {
+app.get("/api/whatsapp/conversations", async (req: Request, res: Response) => {
   res.json(db.whatsappConversations || []);
 });
 
 // WhatsApp Messages for a Conversation
-app.get("/api/whatsapp/conversations/:id/messages", (req: Request, res: Response) => {
+app.get("/api/whatsapp/conversations/:id/messages", async (req: Request, res: Response) => {
   const { id } = req.params;
   const messages = (db.whatsappMessages || []).filter((m: any) => m.conversationId === id);
   res.json(messages);
 });
 
 // Reset Unread Count for Conversation
-app.put("/api/whatsapp/conversations/:id/read", (req: Request, res: Response) => {
+app.put("/api/whatsapp/conversations/:id/read", async (req: Request, res: Response) => {
   const { id } = req.params;
   const conv = (db.whatsappConversations || []).find((c: any) => c.id === id);
   if (conv) {
     conv.unreadCount = 0;
-    writeDb();
+    await writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
     res.json({ success: true, conversation: conv });
   } else {
@@ -1954,15 +1971,15 @@ app.put("/api/whatsapp/conversations/:id/read", (req: Request, res: Response) =>
 });
 
 // Assign Conversation to Sales Executive
-app.put("/api/whatsapp/conversations/:id/assign", (req: Request, res: Response) => {
+app.put("/api/whatsapp/conversations/:id/assign", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { assignedTo } = req.body;
   const conv = (db.whatsappConversations || []).find((c: any) => c.id === id);
   if (conv) {
     conv.assignedTo = assignedTo;
-    writeDb();
+    await writeDb();
     broadcastToClients({ type: "conversation_updated", conversation: conv });
-    logAction("system", `Assigned WhatsApp chat with ${conv.customerName} to ${assignedTo || "None"}`);
+    await logAction("system", `Assigned WhatsApp chat with ${conv.customerName} to ${assignedTo || "None"}`);
     res.json({ success: true, conversation: conv });
   } else {
     res.status(404).json({ error: "Conversation not found" });
@@ -1996,7 +2013,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
   // Update conversation last activity
   conv.lastMessage = newMessage.text;
   conv.lastTimestamp = newMessage.timestamp;
-  writeDb();
+  await writeDb();
 
   // Broadcast agent message
   broadcastToClients({ type: "message_received", message: newMessage, conversation: conv });
@@ -2006,7 +2023,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
 
   // If credentials are not set, trigger sandbox simulator responses for a live feel!
   if (!sentReal) {
-    setTimeout(() => {
+    setTimeout(async () => {
       // Create a simulated reply
       let replyText = "Received! Thank you for the update. I will check the details and let you know.";
       const lowerText = (text || "").toLowerCase();
@@ -2033,7 +2050,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
       conv.lastMessage = simulatedReply.text;
       conv.lastTimestamp = simulatedReply.timestamp;
       conv.unreadCount = (conv.unreadCount || 0) + 1;
-      writeDb();
+      await writeDb();
 
       // Broadcast customer reply
       broadcastToClients({ type: "message_received", message: simulatedReply, conversation: conv });
@@ -2044,7 +2061,7 @@ app.post("/api/whatsapp/conversations/:id/messages", async (req: Request, res: R
 });
 
 // Meta Webhook Verification Endpoints (Fulfill webhook callbacks)
-app.get("/api/whatsapp/webhook", (req: Request, res: Response) => {
+app.get("/api/whatsapp/webhook", async (req: Request, res: Response) => {
   const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || "sih_whatsapp_verify_token";
   
   const mode = req.query["hub.mode"];
@@ -2064,7 +2081,7 @@ app.get("/api/whatsapp/webhook", (req: Request, res: Response) => {
 });
 
 // Meta Webhook Receiver Endpoint (Processes actual inbound messages)
-app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
+app.post("/api/whatsapp/webhook", async (req: Request, res: Response) => {
   const body = req.body;
 
   console.log("[WhatsApp Webhook] Event payload received:", JSON.stringify(body));
@@ -2129,7 +2146,7 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
             followUpHistory: []
           };
           db.leads.unshift(newLead);
-          logAction("system", `Created auto-captured lead: ${contactName} from WhatsApp callback`);
+          await logAction("system", `Created auto-captured lead: ${contactName} from WhatsApp callback`);
         }
       } else {
         conv.lastMessage = textBody;
@@ -2148,7 +2165,7 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
       };
 
       db.whatsappMessages.push(incomingMsg);
-      writeDb();
+      await writeDb();
 
       // Broadcast to client-side components in real-time
       broadcastToClients({ type: "message_received", message: incomingMsg, conversation: conv });
@@ -2160,7 +2177,7 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
           timestamp: new Date().toLocaleDateString("en-IN"),
           text: `Received WhatsApp message: "${textBody}"`
         });
-        writeDb();
+        await writeDb();
         broadcastToClients({ type: "lead_updated", lead: matchingLead });
       }
 
@@ -2173,30 +2190,35 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
 
 // Vite or Static file serving middleware setup
 const isProd = process.env.NODE_ENV === "production";
-if (!isProd) {
-  createViteServer({
-    server: { middlewareMode: true },
-    appType: "spa",
-  }).then((vite) => {
-    app.use(vite.middlewares);
-    
+dbReady.then(() => {
+  if (!isProd) {
+    createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    }).then((vite) => {
+      app.use(vite.middlewares);
+
+      const server = app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running in DEVELOPMENT full-stack mode on http://localhost:${PORT}`);
+      });
+      setupWebSocket(server);
+    }).catch(err => {
+      console.error("Vite server initialization failed:", err);
+    });
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+
+    app.get("*", async (req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+
     const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running in DEVELOPMENT full-stack mode on http://localhost:${PORT}`);
+      console.log(`Server running in PRODUCTION standalone mode on port ${PORT}`);
     });
     setupWebSocket(server);
-  }).catch(err => {
-    console.error("Vite server initialization failed:", err);
-  });
-} else {
-  const distPath = path.join(process.cwd(), "dist");
-  app.use(express.static(distPath));
-  
-  app.get("*", (req: Request, res: Response) => {
-    res.sendFile(path.join(distPath, "index.html"));
-  });
-
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running in PRODUCTION standalone mode on port ${PORT}`);
-  });
-  setupWebSocket(server);
-}
+  }
+}).catch(err => {
+  console.error("FATAL: Database initialization failed, server did not start.", err);
+  process.exit(1);
+});
