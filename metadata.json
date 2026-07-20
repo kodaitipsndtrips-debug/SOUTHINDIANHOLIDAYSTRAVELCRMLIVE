@@ -1,6 +1,8 @@
 {
-  "name": "LeadLine CRM Pro",
-  "description": "Advanced Travel Agency Lead Management System and Itinerary Quotation Studio",
+  "name": "South Indian Holidays CRM Diagnostics",
+  "description": "An interactive diagnostic dashboard for South Indian Holidays Travel CRM to debug and resolve the itineraries booking_number null constraint sync error.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -1,314 +1,110 @@
-export interface User {
+export interface Itinerary {
   id: string;
-  fullName: string;
-  mobile: string;
-  email: string;
-  username: string;
-  password?: string;
-  role: 'superadmin' | 'admin' | 'sales' | 'operations' | 'accounts' | 'accountant';
-  status: 'Active' | 'Inactive';
-  lastLogin: string;
-  permissions?: {
-    view: boolean;
-    add: boolean;
-    edit: boolean;
-    delete: boolean;
-    modifyRights: boolean;
-  };
-}
-
-export interface Expense {
-  id: string;
-  description: string;
-  amount: number;
-  category: string;
-  date: string;
-  approvedBy: string;
-  receiptUrl?: string;
-}
-
-export interface Settings {
-  companyName: string;
-  gstNumber: string;
-  address: string;
-  phone: string;
-  email: string;
-  bankName: string;
-  bankAccount: string;
-  bankIfsc: string;
-  upiId: string;
-  website: string;
-  logo: string;
-  quotationPrefix: string;
-  voucherPrefix: string;
-  invoicePrefix: string;
-  taxRate: number; // e.g. 5 for 5% GST
-}
-
-export interface Hotel {
-  id: string;
-  name: string;
+  title: string;
   destination: string;
-  rating: string;
-  stars?: number;        // alias sent by DirectoryTabs form
-  contactPerson: string;
-  contactPhone: string;
-  phone?: string;        // alias field
-  roomType: string;
-  contractRate: number;
-  availableRooms: number;
+  booking_number: string | null;
+  duration: string;
+  customer_name: string;
+  price: number;
 }
 
-export interface Driver {
-  id: string;
-  name: string;
-  mobile: string;
-  phone?: string;        // alias for mobile used in some display contexts
-  vehicleType: string;
-  vehicleNo: string;
-  status: 'Available' | 'On Trip' | 'Maintenance';
-  rating: string;
-  licenseNo?: string;
-  dailyRate?: number;
+export type SyncStatus = 'idle' | 'syncing' | 'failed' | 'success';
+
+export type ResolutionStrategy = 'schema' | 'fallback' | 'filter';
+
+export interface SyncLog {
+  timestamp: string;
+  type: 'info' | 'success' | 'error';
+  message: string;
 }
 
-export interface Supplier {
+export interface TableStatus {
+  name: string;
+  status: 'pending' | 'success' | 'failed';
+  recordCount: number;
+}
+
+export interface Staff {
   id: string;
   name: string;
-  type: 'Transport' | 'Hotel' | 'Activities' | 'Other';
-  category?: string;     // alias for type used by DirectoryTabs form
-  contactPerson: string;
-  contactPhone: string;
+  role: string;
   email: string;
-  rating: string;
-  balanceDue: number;
-  pendingDues?: number;  // alias for balanceDue used by DirectoryTabs form
-}
-
-export interface FollowUp {
-  id: string;
-  date: string;
-  time: string;
-  type: string; // e.g. Call, WhatsApp, Email, Visit
-  priority: 'Low' | 'Medium' | 'High';
-  remarks: string;
-  assignedTo: string;
-  status: 'Pending' | 'Completed';
-  completionDate?: string;
-  completionTime?: string;
+  avatarColor: string;
+  activeLeadsCount: number;
+  password?: string;
 }
 
 export interface Lead {
   id: string;
-  name: string;
-  mobile: string;
+  customerName: string;
   email: string;
+  phone: string;
   destination: string;
-  travelDate: string;
-  adults: string;
-  children: string;
-  budget?: number;
-  notes: string;
-  status: 'New' | 'Contacted' | 'Proposal Sent' | 'Negotiation' | 'Won' | 'Lost' | 'Hot' | 'Follow-up';
-  priority: 'Low' | 'Medium' | 'High';
-  assignedTo?: string;
-  source?: string; // e.g. Website, WhatsApp, Referral
-  tags?: string[];
-  documents?: { name: string; url: string; category: string }[];
-  timeline: { timestamp: string; text: string }[];
-  followUpHistory: FollowUp[];
+  pax: number;
+  budget: number;
+  status: 'New' | 'Contacted' | 'Proposal Sent' | 'Negotiation' | 'Converted' | 'Lost';
+  assignedStaffId: string | null;
+  createdDate: string;
+  lastUpdated: string;
+  notes?: string;
+  // Upgraded WhatsApp lead parser fields
   pickupCity?: string;
-  childrenAges?: string;
-  vehiclePreference?: 'Sedan' | 'SUV' | 'Tempo Traveller' | string;
-}
-
-export interface TourPackage {
-  id: string;
-  name: string;
-  destination: string;
-  duration: string;
-  category: string;
-  price: number;
-  hotelCategory: string;
-  inclusions: string;
-  exclusions: string;
-  status: 'Active' | 'Inactive';
-}
-
-export interface QuoteItem {
-  id: string;
-  name: string;
-  price: number;
-  gst: number;
-  hsn: string;
-  qty: number;
-  disc: number;
-}
-
-export interface Quotation {
-  id: string;
-  leadId?: string;
-  customerName: string;
-  customerMobile: string;
-  customerEmail: string;
-  destination: string;
-  date: string;
-  items: QuoteItem[];
-  gstAmount: number;
-  discountAmount: number;
-  totalAmount: number;
-  terms: string;
-  bankDetails: string;
-}
-
-export interface Booking {
-  id: string;
-  leadId?: string;
-  customerId: string;
-  customerName: string;
-  customerMobile: string;
-  customerEmail: string;
-  destination: string;
-  travelDate: string;
-  adults: number;
-  children: number;
-  packagePrice: number;
-  hotelDetails: string;
-  driverDetails?: string;
-  status: 'Confirmed' | 'Pending' | 'Cancelled';
-  timeline: { timestamp: string; text: string }[];
-  documents: { name: string; url: string; category: string }[];
-}
-
-export interface HotelVoucher {
-  id: string;
-  bookingId: string;
-  customerId: string;
-  guestName: string;
-  guestMobile: string;
-  guestEmail: string;
-  hotelName: string;
-  hotelAddress: string;
-  hotelPhone: string;
-  hotelEmail: string;
-  hotelContactPerson: string;
-  destination: string;
-  checkInDate: string;
-  checkOutDate: string;
-  numNights: number;
-  numRooms: number;
-  roomType: string;
-  mealPlan: string;
-  numAdults: number;
-  numChildren: number;
-  numInfants: number;
-  confirmationNumber: string;
-  bookingStatus: 'Pending' | 'Confirmed' | 'Cancelled';
-  bookingDate: string;
-  voucherDate: string;
-  supplierName: string;
-  supplierContact: string;
-  totalAmount: number;
-  advancePaid: number;
-  balanceAmount: number;
-  paymentStatus: 'Paid' | 'Partially Paid' | 'Unpaid';
+  travelDate?: string;
+  returnDate?: string;
+  adults?: number;
+  children?: number;
+  rooms?: number;
+  hotelPreference?: string;
+  vehiclePreference?: string;
   specialRequests?: string;
-  billingInstructions?: string;
-  remarks?: string;
-  internalNotes?: string;
+  source?: string;
+  leadPriority?: 'High' | 'Medium' | 'Low';
+  mealPreference?: string;
+  tripType?: string;
+  approximateDates?: boolean;
+  confidenceScore?: number;
+  extractionSource?: string;
+  missingFields?: string[];
+  suggestedCorrections?: string;
+  uncertaintyFlags?: string[];
 }
 
-export interface ItineraryDay {
+export interface CompanyProfile {
+  companyName: string;
+  email: string;
+  phone: string;
+  address: string;
+  website: string;
+  gstin: string;
+  tagline: string;
+}
+
+export interface SystemSettings {
+  defaultAssignmentStrategy: 'round_robin' | 'load_balanced' | 'manual';
+  syncFrequencyMinutes: number;
+  autoContactOnAssign: boolean;
+  allowedDestinations: string[];
+  smtpServer: string;
+  smtpPort: number;
+  smtpUser: string;
+}
+
+export interface DayItinerary {
   dayNumber: number;
   title: string;
-  // ItineraryTab uses activity/stay fields
-  activity?: string;
+  activities: string;
   stay?: string;
-  // Richer fields used in some App.tsx contexts
-  date?: string;
-  description?: string;
-  hotelName?: string;
-  meals?: string[];
-  transportDetails?: string;
-  notes?: string;
+  meals?: string;
 }
 
-export interface Itinerary {
+export interface DayWiseItinerary {
   id: string;
-  bookingId?: string;
-  customerName: string;
-  bookingNumber?: string;
+  leadId?: string;
+  title: string;
   destination: string;
-  travelDate?: string;
-  duration?: string;
-  days: ItineraryDay[];
-  createdAt?: string;
+  duration: string;
+  price?: number;
+  days: DayItinerary[];
+  createdDate: string;
 }
 
-export interface PaymentInstallment {
-  id: string;
-  amount: number;
-  date: string;
-  method: 'UPI' | 'Bank Transfer' | 'Cash' | 'Credit Card';
-  referenceNo: string;
-  receiptUrl?: string;
-}
-
-export interface PaymentLedger {
-  id: string; // SIH-PAY-XXXX
-  bookingId: string;
-  customerName: string;
-  totalAmount: number;
-  advancePaid: number;
-  balanceAmount: number;
-  status: 'Paid' | 'Partially Paid' | 'Unpaid';
-  installments: PaymentInstallment[];
-}
-
-export interface ActivityLog {
-  id: string;
-  timestamp: string;
-  username: string;
-  action: string;
-}
-
-export interface WhatsAppTemplate {
-  id: string;
-  name: string;
-  category: 'Leads' | 'Quotations' | 'Bookings' | 'Vouchers' | 'Payments' | 'Fleet' | 'Other';
-  message: string;
-}
-
-export interface WhatsAppLog {
-  id: string;
-  timestamp: string;
-  customerName: string;
-  mobile: string;
-  templateName: string;
-  messageText: string;
-  sentBy: string;
-}
-
-export interface WhatsAppMessage {
-  id: string;
-  conversationId: string;
-  sender: 'customer' | 'agent';
-  senderName?: string;
-  text: string;
-  attachmentUrl?: string;
-  attachmentType?: 'pdf' | 'image' | 'document';
-  timestamp: string;
-}
-
-export interface WhatsAppConversation {
-  id: string;
-  customerName: string;
-  mobile: string;
-  unreadCount: number;
-  assignedTo?: string;
-  lastMessage?: string;
-  lastTimestamp: string;
-}
-
-// Voucher is an alias for HotelVoucher — VouchersTab imports it as 'Voucher'
-export type Voucher = HotelVoucher;
