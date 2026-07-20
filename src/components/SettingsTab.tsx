@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import * as Lucide from "lucide-react";
+import { useToast } from "../hooks/useToast";
 
 interface SettingsTabProps {
   settings: any;
@@ -12,9 +13,11 @@ export default function SettingsTab({
   onUpdateSettings,
   onImportBackup
 }: SettingsTabProps) {
+  const toast = useToast();
   const [formFields, setFormFields] = useState({ ...settings });
   const [successMsg, setSuccessMsg] = useState("");
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -109,10 +112,12 @@ export default function SettingsTab({
 
   // Export full CRM database as JSON
   const handleExportBackup = async () => {
+    setExporting(true);
     try {
       const res = await fetch("/api/backup/export");
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
-      
+      const meta = data._meta;
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -120,8 +125,15 @@ export default function SettingsTab({
       link.download = `sih-crm-backup-${new Date().toISOString().split("T")[0]}.json`;
       link.click();
       URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Backup export failed", err);
+      toast.success(
+        meta
+          ? `Backup exported — ${meta.leadCount} leads, ${meta.bookingCount} bookings`
+          : "Backup exported successfully"
+      );
+    } catch (err: any) {
+      toast.error("Backup export failed — " + (err.message || "unknown error"));
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -130,67 +142,77 @@ export default function SettingsTab({
     if (!e.target.files || !e.target.files[0]) return;
     const file = e.target.files[0];
     setImporting(true);
+    toast.info("Reading backup file…");
 
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         const fileContent = event.target?.result as string;
-        
-        // Failsafe check: Detect if user mistakenly uploaded a SQL export
-        if (fileContent.trim().toUpperCase().startsWith("CREATE TABLE") || fileContent.trim().toUpperCase().startsWith("--") || fileContent.trim().toUpperCase().startsWith("INSERT INTO")) {
-          alert("Error: You have uploaded a PostgreSQL / Supabase SQL backup file. This interface requires the JSON backup file exported from this CRM app. Please select the correct '.json' file.");
+
+        // Failsafe check: SQL backup uploaded by mistake
+        if (fileContent.trim().toUpperCase().startsWith("CREATE TABLE") ||
+            fileContent.trim().toUpperCase().startsWith("--") ||
+            fileContent.trim().toUpperCase().startsWith("INSERT INTO")) {
+          toast.error("Wrong file type — this looks like a SQL backup. Please use the JSON backup exported from this CRM.");
           setImporting(false);
           return;
         }
 
-        let json;
+        let json: any;
         try {
           json = JSON.parse(fileContent);
         } catch (parseErr: any) {
-          console.error("JSON Syntax Error:", parseErr);
-          alert(`Parsing JSON backup failed. The file is not a valid JSON document.\n\nDetails: ${parseErr.message}`);
+          toast.error(`Invalid JSON file — ${parseErr.message}`);
           setImporting(false);
           return;
         }
 
+        // Check version compatibility
+        if (json._meta?.schemaVersion) {
+          const major = parseInt(json._meta.schemaVersion.split(".")[0], 10);
+          if (major > 2) {
+            toast.error(`Backup version ${json._meta.schemaVersion} is too new for this app version. Please upgrade the application first.`);
+            setImporting(false);
+            return;
+          }
+        }
+
         if (json && json.users) {
+          toast.info("Restoring database — this may take a moment…");
           const res = await fetch("/api/backup/import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(json)
           });
-          
+
           if (!res.ok) {
             const errorText = await res.text();
-            console.error(`Server error during import (Status ${res.status}):`, errorText);
-            alert(`Failed to restore: Server returned HTTP ${res.status}\n\nDetails: ${errorText.substring(0, 300)}`);
+            toast.error(`Restore failed (HTTP ${res.status}) — ${errorText.substring(0, 200)}`);
             setImporting(false);
             return;
           }
 
-          let result;
+          let result: any;
           try {
             result = await res.json();
-          } catch (jsonErr: any) {
-            console.error("Failed to parse server response as JSON:", jsonErr);
-            alert("Database import completed, but server did not return a valid JSON success code.");
+          } catch {
+            toast.warn("Import may have completed, but the server response was unreadable. Please refresh.");
             setImporting(false);
             return;
           }
 
           if (result.success) {
             onImportBackup(json);
-            alert("Database restored successfully! The app will refresh with imported states.");
-            window.location.reload();
+            toast.success(result.message || "Database restored successfully!");
+            setTimeout(() => window.location.reload(), 1500);
           } else {
-            alert("Failed to restore: " + result.message);
+            toast.error("Restore failed — " + result.message);
           }
         } else {
-          alert("Invalid backup file structure: Missing 'users' table or not a CRM backup JSON file.");
+          toast.error("Invalid backup file — 'users' collection is missing. This may not be a valid CRM backup.");
         }
       } catch (err: any) {
-        console.error("Unhandled backup import error:", err);
-        alert(`An error occurred while importing the backup:\n${err?.message || err}`);
+        toast.error("Backup import error — " + (err?.message || String(err)));
       } finally {
         setImporting(false);
       }
@@ -464,17 +486,20 @@ export default function SettingsTab({
             {/* Export trigger */}
             <button
               onClick={handleExportBackup}
-              className="w-full bg-slate-950 border border-slate-850 hover:bg-slate-850 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
+              disabled={exporting}
+              className="w-full bg-slate-950 border border-slate-850 hover:bg-slate-850 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <Lucide.Download className="w-4 h-4 text-blue-400" />
-              Download System Backup (JSON)
+              {exporting
+                ? <><Lucide.Loader2 className="w-4 h-4 text-blue-400 animate-spin" /> Exporting…</>
+                : <><Lucide.Download className="w-4 h-4 text-blue-400" /> Download System Backup (JSON)</>}
             </button>
 
             {/* Import file input wrapper */}
             <div className="relative">
-              <label className="w-full bg-slate-950 border border-slate-850 hover:bg-slate-850 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer">
-                <Lucide.Upload className="w-4 h-4 text-emerald-400" />
-                {importing ? "Importing Backup..." : "Restore Prior Backup File"}
+              <label className={`w-full bg-slate-950 border border-slate-850 hover:bg-slate-850 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all ${importing ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
+                {importing
+                  ? <><Lucide.Loader2 className="w-4 h-4 text-emerald-400 animate-spin" /> Restoring Backup…</>
+                  : <><Lucide.Upload className="w-4 h-4 text-emerald-400" /> Restore Prior Backup File</>}
                 <input
                   type="file"
                   accept=".json"

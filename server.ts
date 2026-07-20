@@ -7,15 +7,71 @@ import { WebSocketServer, WebSocket } from "ws";
 import pg from "pg";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
+import axios from "axios";
+import rateLimit from "express-rate-limit";
 
 // Load environment variables from .env file
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",").map(s => s.trim()).filter(Boolean);
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// ── Security headers (no helmet dependency required) ──────────────────────────
+app.use((_req: Request, res: Response, next: any) => {
+  res.setHeader("X-Content-Type-Options",   "nosniff");
+  res.setHeader("X-Frame-Options",          "DENY");
+  res.setHeader("X-XSS-Protection",         "1; mode=block");
+  res.setHeader("Referrer-Policy",          "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy",       "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
+// ── CORS ──────────────────────────────────────────────────────────────────────
+app.use((req: Request, res: Response, next: any) => {
+  const origin = req.headers.origin as string | undefined;
+  // In production, only allow listed origins; in dev, allow any localhost/render
+  const isProd = process.env.NODE_ENV === "production";
+  const isAllowed =
+    !isProd ||
+    !origin ||
+    ALLOWED_ORIGINS.includes(origin) ||
+    /\.render\.com$/.test(origin) ||
+    /localhost/.test(origin);
+
+  if (isAllowed && origin) {
+    res.setHeader("Access-Control-Allow-Origin",      origin);
+    res.setHeader("Access-Control-Allow-Methods",     "GET,POST,PUT,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers",     "Content-Type,Authorization");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max:  300,                 // 300 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message: { success: false, message: "Too many requests — please wait a moment and try again." },
+  skip: (req) => req.path === "/api/health",  // don't rate-limit health checks
+});
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max:  20,  // stricter for auth
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message: { success: false, message: "Too many login attempts — please wait 15 minutes." },
+});
+app.use("/api/", apiLimiter);
+app.use("/api/auth/login", loginLimiter);
+
+// ── Body parsing — reduced limits (50 MB only for file uploads, not regular API) ──
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 // Gracefully handle malformed JSON payload errors sent to the server
 app.use((err: any, req: Request, res: Response, next: any) => {
@@ -38,16 +94,82 @@ app.use("/uploads", express.static(UPLOADS_DIR));
 
 const DB_PATH = path.join(DATA_DIR, "db.json");
 
-// Multer Config
-const storage = multer.diskStorage({
+// ── Supabase Storage (optional — falls back to local disk if not configured) ──
+let supabaseClient: any = null;
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "crm-uploads";
+
+async function initSupabaseStorage() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    console.log("Supabase Storage client initialized — file uploads will be stored in Supabase.");
+  } catch (e) {
+    console.warn("Supabase Storage init failed, falling back to local disk uploads:", e);
+  }
+}
+// Note: initSupabaseStorage() is called during server startup (in the dbReady.then block below)
+
+async function uploadFileToStorage(
+  fileBuffer: Buffer,
+  originalName: string,
+  mimeType: string
+): Promise<{ url: string; storagePath: string; storageType: "supabase" | "local" }> {
+  const ext = path.extname(originalName);
+  const uniqueName = `${Date.now()}-${Math.floor(Math.random() * 1e6)}${ext}`;
+
+  if (supabaseClient) {
+    try {
+      const storagePath = `uploads/${uniqueName}`;
+      const { error } = await supabaseClient.storage
+        .from(SUPABASE_BUCKET)
+        .upload(storagePath, fileBuffer, { contentType: mimeType, upsert: false });
+      if (!error) {
+        const { data: urlData } = supabaseClient.storage
+          .from(SUPABASE_BUCKET)
+          .getPublicUrl(storagePath);
+        return { url: urlData.publicUrl, storagePath, storageType: "supabase" };
+      }
+      console.warn("Supabase upload failed, falling back to local:", error.message);
+    } catch (e) {
+      console.warn("Supabase upload error, falling back to local:", e);
+    }
+  }
+
+  // Fallback: local disk
+  const localPath = path.join(UPLOADS_DIR, uniqueName);
+  fs.writeFileSync(localPath, fileBuffer);
+  return { url: `/uploads/${uniqueName}`, storagePath: localPath, storageType: "local" };
+}
+
+async function deleteFileFromStorage(urlOrPath: string): Promise<void> {
+  if (supabaseClient && urlOrPath.startsWith("http") && urlOrPath.includes(SUPABASE_BUCKET)) {
+    try {
+      // Extract storage path from URL
+      const urlParts = urlOrPath.split(`/${SUPABASE_BUCKET}/`);
+      if (urlParts.length > 1) {
+        await supabaseClient.storage.from(SUPABASE_BUCKET).remove([urlParts[1]]);
+      }
+    } catch (e) {
+      console.warn("Supabase delete error:", e);
+    }
+  } else if (urlOrPath.startsWith("/uploads/")) {
+    const localPath = path.join(UPLOADS_DIR, path.basename(urlOrPath));
+    try { fs.unlinkSync(localPath); } catch (_) {}
+  }
+}
+
+// Multer Config — always disk for temp storage; uploadFileToStorage() routes to Supabase if available
+const diskStorageMulter = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
-    const uniqueName = `${Date.now()}-${Math.floor(Math.random() * 1e6)}${ext}`;
-    cb(null, uniqueName);
+    cb(null, `${Date.now()}-${Math.floor(Math.random() * 1e6)}${ext}`);
   }
 });
-const upload = multer({ storage });
+const upload = multer({ storage: diskStorageMulter, limits: { fileSize: 20 * 1024 * 1024 } }); // 20 MB
 
 // Initial Core Databases to preload
 const INITIAL_DB = {
@@ -884,15 +1006,27 @@ async function initializeRelationalTables() {
   }
 }
 
-async function syncRelationalDatabase() {
+async function syncRelationalDatabase(fullReplace: boolean = false) {
   if (!pool) return;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Track which IDs are present in this sync so fullReplace mode can safely
+    // remove rows that no longer exist in the current db snapshot (used only
+    // during a full backup restore — never during routine incremental writes).
+    const keepIds: Record<string, string[]> = {
+      users: [], leads: [], followups: [], tour_packages: [], bookings: [],
+      hotel_vouchers: [], itineraries: [], payment_ledgers: [], expenses: [],
+      hotels: [], drivers: [], suppliers: [], whatsapp_conversations: [],
+      whatsapp_messages: [], quotations: [], quotation_items: [],
+      whatsapp_templates: [], whatsapp_logs: []
+    };
     
     // 1. Sync users
     if (Array.isArray(db.users)) {
       for (const u of db.users) {
+        keepIds.users.push(u.id);
         await client.query(`
           INSERT INTO users (id, full_name, mobile, email, username, password, role, status, last_login)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -913,6 +1047,7 @@ async function syncRelationalDatabase() {
     // 2. Sync leads & followups
     if (Array.isArray(db.leads)) {
       for (const l of db.leads) {
+        keepIds.leads.push(l.id);
         const adultsVal = typeof l.adults === "number" ? l.adults : parseInt(l.adults, 10) || 2;
         const childrenVal = typeof l.children === "number" ? l.children : parseInt(l.children, 10) || 0;
         await client.query(`
@@ -937,15 +1072,20 @@ async function syncRelationalDatabase() {
             timeline = EXCLUDED.timeline,
             updated_at = CURRENT_TIMESTAMP
         `, [
-          l.id, l.name, l.mobile, l.email || null, l.destination, l.travelDate || null,
-          adultsVal, childrenVal, l.budget || null, l.notes || "", l.status, l.priority || "Medium",
-          l.assignedTo || null, l.source || null, l.tags || [],
-          JSON.stringify(l.documents || []), JSON.stringify(l.timeline || [])
+          l.id, l.name, l.mobile, (l as any).email || null, l.destination, (l as any).travelDate || null,
+          adultsVal, childrenVal, (l as any).budget || null, l.notes || "", l.status, (l as any).priority || "Medium",
+          (l as any).assignedTo || null, (l as any).source || null, (l as any).tags || [],
+          JSON.stringify((l as any).documents || []), JSON.stringify((l as any).timeline || [])
         ]);
 
         const fuHistory = Array.isArray(l.followUpHistory) ? l.followUpHistory : [];
-        for (const fu of fuHistory) {
-          const fuId = fu.id || `fu-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        for (let fuIdx = 0; fuIdx < fuHistory.length; fuIdx++) {
+          const fu = fuHistory[fuIdx];
+          // Deterministic id: same followup (by position under its lead) always maps to
+          // the same row on repeated syncs, instead of minting a new random id every time
+          // (which was silently accumulating duplicate followup rows on every save).
+          const fuId = fu.id || `fu-${l.id}-${fuIdx}`;
+          keepIds.followups.push(fuId);
           await client.query(`
             INSERT INTO followups (id, date, time, type, priority, remarks, assigned_to, status, completion_date, completion_time, lead_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -973,6 +1113,7 @@ async function syncRelationalDatabase() {
     // 3. Sync packages (db.packages)
     if (Array.isArray(db.packages)) {
       for (const p of db.packages) {
+        keepIds.tour_packages.push(p.id);
         await client.query(`
           INSERT INTO tour_packages (id, name, destination, duration, category, price, hotel_category, inclusions, exclusions, status)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -994,6 +1135,7 @@ async function syncRelationalDatabase() {
     // 4. Sync bookings
     if (Array.isArray(db.bookings)) {
       for (const b of db.bookings) {
+        keepIds.bookings.push(b.id);
         const adultsVal = typeof b.adults === "number" ? b.adults : parseInt(b.adults, 10) || 2;
         const childrenVal = typeof b.children === "number" ? b.children : parseInt(b.children, 10) || 0;
         await client.query(`
@@ -1017,10 +1159,10 @@ async function syncRelationalDatabase() {
             documents = EXCLUDED.documents,
             updated_at = CURRENT_TIMESTAMP
         `, [
-          b.id, b.leadId || null, b.customerId, b.customerName, b.customerMobile, b.customerEmail || null,
+          b.id, (b as any).leadId || null, (b as any).customerId, b.customerName, b.customerMobile, (b as any).customerEmail || null,
           b.destination, b.travelDate, adultsVal, childrenVal,
-          b.packagePrice || 0, b.hotelDetails || "", b.driverDetails || "", b.status,
-          JSON.stringify(b.timeline || []), JSON.stringify(b.documents || [])
+          (b as any).packagePrice || 0, (b as any).hotelDetails || "", (b as any).driverDetails || "", b.status,
+          JSON.stringify((b as any).timeline || []), JSON.stringify((b as any).documents || [])
         ]);
       }
     }
@@ -1028,6 +1170,7 @@ async function syncRelationalDatabase() {
     // 5. Sync hotel_vouchers (db.vouchers)
     if (Array.isArray(db.vouchers)) {
       for (const v of db.vouchers) {
+        keepIds.hotel_vouchers.push(v.id);
         const nightsVal = typeof v.numNights === "number" ? v.numNights : parseInt(v.numNights, 10) || 1;
         const roomsVal = typeof v.numRooms === "number" ? v.numRooms : parseInt(v.numRooms, 10) || 1;
         const adultsVal = typeof v.numAdults === "number" ? v.numAdults : parseInt(v.numAdults, 10) || 2;
@@ -1087,6 +1230,7 @@ async function syncRelationalDatabase() {
     // 6. Sync itineraries
     if (Array.isArray(db.itineraries)) {
       for (const it of db.itineraries) {
+        keepIds.itineraries.push(it.id);
         await client.query(`
           INSERT INTO itineraries (id, booking_id, customer_name, booking_number, destination, travel_date, days)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1105,6 +1249,7 @@ async function syncRelationalDatabase() {
     // 7. Sync payment_ledgers (db.payments)
     if (Array.isArray(db.payments)) {
       for (const py of db.payments) {
+        keepIds.payment_ledgers.push(py.id);
         await client.query(`
           INSERT INTO payment_ledgers (id, booking_id, customer_name, total_amount, advance_paid, balance_amount, status, installments)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -1124,6 +1269,7 @@ async function syncRelationalDatabase() {
     // 8. Sync expenses
     if (Array.isArray(db.expenses)) {
       for (const ex of db.expenses) {
+        keepIds.expenses.push(ex.id);
         await client.query(`
           INSERT INTO expenses (id, description, amount, category, date, approved_by, receipt_url)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1135,13 +1281,14 @@ async function syncRelationalDatabase() {
             approved_by = EXCLUDED.approved_by,
             receipt_url = EXCLUDED.receipt_url,
             updated_at = CURRENT_TIMESTAMP
-        `, [ex.id, ex.description, ex.amount, ex.category, ex.date, ex.approvedBy, ex.receiptUrl || null]);
+        `, [ex.id, ex.description, ex.amount, ex.category, ex.date, ex.approvedBy, (ex as any).receiptUrl || null]);
       }
     }
 
     // 9. Sync hotels
     if (Array.isArray(db.hotels)) {
       for (const h of db.hotels) {
+        keepIds.hotels.push(h.id);
         await client.query(`
           INSERT INTO hotels (id, name, destination, rating, contact_person, contact_phone, room_type, contract_rate, available_rooms)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -1162,6 +1309,7 @@ async function syncRelationalDatabase() {
     // 10. Sync drivers
     if (Array.isArray(db.drivers)) {
       for (const d of db.drivers) {
+        keepIds.drivers.push(d.id);
         await client.query(`
           INSERT INTO drivers (id, name, mobile, vehicle_type, vehicle_no, status, rating)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1180,6 +1328,7 @@ async function syncRelationalDatabase() {
     // 11. Sync suppliers
     if (Array.isArray(db.suppliers)) {
       for (const s of db.suppliers) {
+        keepIds.suppliers.push(s.id);
         await client.query(`
           INSERT INTO suppliers (id, name, type, contact_person, contact_phone, email, rating, balance_due)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -1241,6 +1390,7 @@ async function syncRelationalDatabase() {
     // 14. Sync whatsapp conversations & messages
     if (Array.isArray(db.whatsappConversations)) {
       for (const conv of db.whatsappConversations) {
+        keepIds.whatsapp_conversations.push(conv.id);
         await client.query(`
           INSERT INTO whatsapp_conversations (id, customer_name, mobile, unread_count, assigned_to, last_message, last_timestamp)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1258,6 +1408,7 @@ async function syncRelationalDatabase() {
 
     if (Array.isArray(db.whatsappMessages)) {
       for (const msg of db.whatsappMessages) {
+        keepIds.whatsapp_messages.push(msg.id);
         await client.query(`
           INSERT INTO whatsapp_messages (id, conversation_id, sender, sender_name, text, attachment_url, attachment_type, timestamp)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -1275,8 +1426,12 @@ async function syncRelationalDatabase() {
 
     // 15. Sync quotations & items
     if (Array.isArray(db.quotations)) {
-      for (const q of db.quotations) {
-        const qId = q.id || `qt-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      for (let qIdx = 0; qIdx < db.quotations.length; qIdx++) {
+        const q = db.quotations[qIdx];
+        // Deterministic id: avoids minting a new random quotation id on every sync
+        // for records that were created without one.
+        const qId = q.id || `qt-${qIdx}-${(q.quotationNumber || '').replace(/[^a-zA-Z0-9-]/g, '') || 'noid'}`;
+        keepIds.quotations.push(qId);
         const qDays = typeof q.numDays === "number" ? q.numDays : parseInt(q.numDays, 10) || 3;
         const qAdults = typeof q.adults === "number" ? q.adults : parseInt(q.adults, 10) || 2;
         const qChildren = typeof q.children === "number" ? q.children : parseInt(q.children, 10) || 0;
@@ -1310,8 +1465,13 @@ async function syncRelationalDatabase() {
         ]);
 
         const qItems = Array.isArray(q.quoteItems) ? q.quoteItems : [];
-        for (const item of qItems) {
-          const itemId = item.id || `qi-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        for (let itemIdx = 0; itemIdx < qItems.length; itemIdx++) {
+          const item = qItems[itemIdx];
+          // Deterministic id: same line item (by position under its quotation) always
+          // maps to the same row, instead of a new random id every sync (which was
+          // silently accumulating duplicate line items on every save).
+          const itemId = item.id || `qi-${qId}-${itemIdx}`;
+          keepIds.quotation_items.push(itemId);
           const itemQty = typeof item.qty === "number" ? item.qty : parseInt(item.qty, 10) || 1;
           await client.query(`
             INSERT INTO quotation_items (id, quotation_id, name, hsn, qty, rate, gst)
@@ -1331,6 +1491,7 @@ async function syncRelationalDatabase() {
     // 16. Sync whatsapp templates
     if (Array.isArray(db.whatsappTemplates)) {
       for (const t of db.whatsappTemplates) {
+        keepIds.whatsapp_templates.push(t.id);
         await client.query(`
           INSERT INTO whatsapp_templates (id, name, category, message)
           VALUES ($1, $2, $3, $4)
@@ -1346,6 +1507,7 @@ async function syncRelationalDatabase() {
     // 17. Sync whatsapp logs
     if (Array.isArray(db.whatsappLogs)) {
       for (const wl of db.whatsappLogs) {
+        keepIds.whatsapp_logs.push(wl.id);
         await client.query(`
           INSERT INTO whatsapp_logs (id, timestamp, customer_name, mobile, template_name, message_text, sent_by)
           VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1360,8 +1522,45 @@ async function syncRelationalDatabase() {
       }
     }
 
+    if (fullReplace) {
+      // Remove rows that no longer exist in the restored/current db snapshot.
+      // Only used for a genuine backup restore — never during routine incremental
+      // saves, where "not present in this one sync" just means "unrelated to this
+      // particular save" rather than "should be deleted". Children are deleted
+      // before parents; activity_logs is intentionally left alone (audit trail,
+      // not restorable state, should not be pruned by a restore).
+      const del = async (table: string, idList: string[]) => {
+        if (idList.length > 0) {
+          await client.query(`DELETE FROM ${table} WHERE id != ALL($1::text[])`, [idList]);
+        } else {
+          await client.query(`DELETE FROM ${table}`);
+        }
+      };
+      // Children first
+      await del("quotation_items", keepIds.quotation_items);
+      await del("followups", keepIds.followups);
+      await del("hotel_vouchers", keepIds.hotel_vouchers);
+      await del("itineraries", keepIds.itineraries);
+      await del("payment_ledgers", keepIds.payment_ledgers);
+      await del("whatsapp_messages", keepIds.whatsapp_messages);
+      // Then parents
+      await del("quotations", keepIds.quotations);
+      await del("leads", keepIds.leads);
+      await del("bookings", keepIds.bookings);
+      await del("whatsapp_conversations", keepIds.whatsapp_conversations);
+      // Independent tables
+      await del("users", keepIds.users);
+      await del("tour_packages", keepIds.tour_packages);
+      await del("expenses", keepIds.expenses);
+      await del("hotels", keepIds.hotels);
+      await del("drivers", keepIds.drivers);
+      await del("suppliers", keepIds.suppliers);
+      await del("whatsapp_templates", keepIds.whatsapp_templates);
+      await del("whatsapp_logs", keepIds.whatsapp_logs);
+    }
+
     await client.query("COMMIT");
-    console.log("Successfully synchronized all CRM relational database modules!");
+    console.log("Successfully synchronized all CRM relational database modules!" + (fullReplace ? " (full replace mode)" : ""));
   } catch (err: any) {
     await client.query("ROLLBACK");
     console.error("[RELATIONAL-SYNC-ERROR] Background relational mirror transaction failed:", redactSecrets(err.message || String(err)));
@@ -1946,7 +2145,7 @@ export const DB_Service = {
           lId, lead.name, lead.mobile, lead.email || null, lead.destination, lead.travelDate || null,
           lead.adults || 2, lead.children || 0, lead.budget ? Number(lead.budget) : null, lead.notes || "",
           lead.status || "New", lead.priority || "Medium", lead.assignedTo || "", lead.source || "Direct",
-          JSON.stringify(lead.tags || []), JSON.stringify(lead.documents || []), JSON.stringify(lead.timeline || [])
+          lead.tags || [], JSON.stringify(lead.documents || []), JSON.stringify(lead.timeline || [])
         ]);
 
         if (Array.isArray(lead.followUpHistory)) {
@@ -2078,10 +2277,12 @@ export const DB_Service = {
         name: row.name,
         destination: row.destination,
         duration: row.duration,
+        category: row.category,
         price: row.price ? Number(row.price) : 0,
-        itinerary: row.itinerary || [],
-        inclusions: row.inclusions || [],
-        exclusions: row.exclusions || []
+        hotelCategory: row.hotel_category,
+        inclusions: row.inclusions || "",
+        exclusions: row.exclusions || "",
+        status: row.status || "Active"
       }));
     }
     return db.packages || [];
@@ -2092,20 +2293,22 @@ export const DB_Service = {
     const pId = pkg.id || `PKG-${Math.floor(10000 + Math.random() * 90000)}`;
     if (pool) {
       await pool.query(`
-        INSERT INTO tour_packages (id, name, destination, duration, price, itinerary, inclusions, exclusions)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO tour_packages (id, name, destination, duration, category, price, hotel_category, inclusions, exclusions, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
           destination = EXCLUDED.destination,
           duration = EXCLUDED.duration,
+          category = EXCLUDED.category,
           price = EXCLUDED.price,
-          itinerary = EXCLUDED.itinerary,
+          hotel_category = EXCLUDED.hotel_category,
           inclusions = EXCLUDED.inclusions,
           exclusions = EXCLUDED.exclusions,
+          status = EXCLUDED.status,
           updated_at = CURRENT_TIMESTAMP
       `, [
-        pId, pkg.name, pkg.destination, pkg.duration, pkg.price ? Number(pkg.price) : 0,
-        JSON.stringify(pkg.itinerary || []), JSON.stringify(pkg.inclusions || []), JSON.stringify(pkg.exclusions || [])
+        pId, pkg.name, pkg.destination, pkg.duration, pkg.category || null, pkg.price ? Number(pkg.price) : 0,
+        pkg.hotelCategory || null, pkg.inclusions || "", pkg.exclusions || "", pkg.status || "Active"
       ]);
     } else {
       const idx = db.packages.findIndex((p: any) => p.id === pkg.id);
@@ -2408,8 +2611,8 @@ export const DB_Service = {
         amount: row.amount ? Number(row.amount) : 0,
         date: row.date,
         description: row.description,
-        paymentMode: row.payment_mode,
-        loggedBy: row.logged_by
+        approvedBy: row.approved_by,
+        receiptUrl: row.receipt_url
       }));
     }
     return db.expenses || [];
@@ -2420,18 +2623,19 @@ export const DB_Service = {
     const eId = exp.id || `EXP-${Math.floor(1000 + Math.random() * 9000)}`;
     if (pool) {
       await pool.query(`
-        INSERT INTO expenses (id, category, amount, date, description, payment_mode, logged_by)
+        INSERT INTO expenses (id, category, amount, date, description, approved_by, receipt_url)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (id) DO UPDATE SET
           category = EXCLUDED.category,
           amount = EXCLUDED.amount,
           date = EXCLUDED.date,
           description = EXCLUDED.description,
-          payment_mode = EXCLUDED.payment_mode,
-          logged_by = EXCLUDED.logged_by
+          approved_by = EXCLUDED.approved_by,
+          receipt_url = EXCLUDED.receipt_url,
+          updated_at = CURRENT_TIMESTAMP
       `, [
         eId, exp.category, exp.amount ? Number(exp.amount) : 0, exp.date,
-        exp.description || "", exp.paymentMode || "Cash", exp.loggedBy || "admin"
+        exp.description || "", exp.approvedBy || "admin", exp.receiptUrl || null
       ]);
     } else {
       const idx = db.expenses.findIndex((e: any) => e.id === exp.id);
@@ -2465,10 +2669,10 @@ export const DB_Service = {
         destination: row.destination,
         rating: row.rating,
         contactPerson: row.contact_person,
-        phone: row.phone,
-        email: row.email,
-        tariffStandard: row.tariff_standard ? Number(row.tariff_standard) : 0,
-        tariffDeluxe: row.tariff_deluxe ? Number(row.tariff_deluxe) : 0
+        contactPhone: row.contact_phone,
+        roomType: row.room_type,
+        contractRate: row.contract_rate ? Number(row.contract_rate) : 0,
+        availableRooms: row.available_rooms ? Number(row.available_rooms) : 0
       }));
     }
     return db.hotels || [];
@@ -2479,21 +2683,22 @@ export const DB_Service = {
     const hId = hotel.id || `H-${Math.floor(10 + Math.random() * 90)}`;
     if (pool) {
       await pool.query(`
-        INSERT INTO hotels (id, name, destination, rating, contact_person, phone, email, tariff_standard, tariff_deluxe)
+        INSERT INTO hotels (id, name, destination, rating, contact_person, contact_phone, room_type, contract_rate, available_rooms)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
           destination = EXCLUDED.destination,
           rating = EXCLUDED.rating,
           contact_person = EXCLUDED.contact_person,
-          phone = EXCLUDED.phone,
-          email = EXCLUDED.email,
-          tariff_standard = EXCLUDED.tariff_standard,
-          tariff_deluxe = EXCLUDED.tariff_deluxe
+          contact_phone = EXCLUDED.contact_phone,
+          room_type = EXCLUDED.room_type,
+          contract_rate = EXCLUDED.contract_rate,
+          available_rooms = EXCLUDED.available_rooms,
+          updated_at = CURRENT_TIMESTAMP
       `, [
-        hId, hotel.name, hotel.destination, hotel.rating || "3 Star", hotel.contactPerson || "",
-        hotel.phone || "", hotel.email || "", hotel.tariffStandard ? Number(hotel.tariffStandard) : 0,
-        hotel.tariffDeluxe ? Number(hotel.tariffDeluxe) : 0
+        hId, hotel.name, hotel.destination, (hotel.rating || hotel.stars || "3") + "", hotel.contactPerson || "",
+        hotel.contactPhone || hotel.phone || "", hotel.roomType || null, hotel.contractRate ? Number(hotel.contractRate) : 0,
+        hotel.availableRooms ? Number(hotel.availableRooms) : 0
       ]);
     } else {
       const idx = db.hotels.findIndex((h: any) => h.id === hotel.id);
@@ -2514,11 +2719,12 @@ export const DB_Service = {
       return res.rows.map((row: any) => ({
         id: row.id,
         name: row.name,
-        phone: row.phone,
-        vehicleName: row.vehicle_name,
-        vehicleNumber: row.vehicle_number,
+        mobile: row.mobile,
+        phone: row.mobile,
+        vehicleType: row.vehicle_type,
+        vehicleNo: row.vehicle_no,
         status: row.status,
-        licenseNumber: row.license_number
+        rating: row.rating
       }));
     }
     return db.drivers || [];
@@ -2529,18 +2735,19 @@ export const DB_Service = {
     const dId = driver.id || `DRV-${Math.floor(10 + Math.random() * 90)}`;
     if (pool) {
       await pool.query(`
-        INSERT INTO drivers (id, name, phone, vehicle_name, vehicle_number, status, license_number)
+        INSERT INTO drivers (id, name, mobile, vehicle_type, vehicle_no, status, rating)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
-          phone = EXCLUDED.phone,
-          vehicle_name = EXCLUDED.vehicle_name,
-          vehicle_number = EXCLUDED.vehicle_number,
+          mobile = EXCLUDED.mobile,
+          vehicle_type = EXCLUDED.vehicle_type,
+          vehicle_no = EXCLUDED.vehicle_no,
           status = EXCLUDED.status,
-          license_number = EXCLUDED.license_number
+          rating = EXCLUDED.rating,
+          updated_at = CURRENT_TIMESTAMP
       `, [
-        dId, driver.name, driver.phone, driver.vehicleName || "", driver.vehicleNumber || "",
-        driver.status || "Available", driver.licenseNumber || ""
+        dId, driver.name, driver.mobile || driver.phone || "", driver.vehicleType || "", driver.vehicleNo || "",
+        driver.status || "Available", driver.rating || null
       ]);
     } else {
       const idx = db.drivers.findIndex((d: any) => d.id === driver.id);
@@ -2561,11 +2768,14 @@ export const DB_Service = {
       return res.rows.map((row: any) => ({
         id: row.id,
         name: row.name,
-        serviceType: row.service_type,
+        type: row.type,
+        category: row.type,
         contactPerson: row.contact_person,
-        phone: row.phone,
+        contactPhone: row.contact_phone,
         email: row.email,
-        gstNumber: row.gst_number
+        rating: row.rating,
+        balanceDue: row.balance_due ? Number(row.balance_due) : 0,
+        pendingDues: row.balance_due ? Number(row.balance_due) : 0
       }));
     }
     return db.suppliers || [];
@@ -2576,18 +2786,21 @@ export const DB_Service = {
     const sId = supplier.id || `SUP-${Math.floor(10 + Math.random() * 90)}`;
     if (pool) {
       await pool.query(`
-        INSERT INTO suppliers (id, name, service_type, contact_person, phone, email, gst_number)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO suppliers (id, name, type, contact_person, contact_phone, email, rating, balance_due)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
-          service_type = EXCLUDED.service_type,
+          type = EXCLUDED.type,
           contact_person = EXCLUDED.contact_person,
-          phone = EXCLUDED.phone,
+          contact_phone = EXCLUDED.contact_phone,
           email = EXCLUDED.email,
-          gst_number = EXCLUDED.gst_number
+          rating = EXCLUDED.rating,
+          balance_due = EXCLUDED.balance_due,
+          updated_at = CURRENT_TIMESTAMP
       `, [
-        sId, supplier.name, supplier.serviceType, supplier.contactPerson || "",
-        supplier.phone || "", supplier.email || "", supplier.gstNumber || ""
+        sId, supplier.name, supplier.type || supplier.category || "General", supplier.contactPerson || "",
+        supplier.contactPhone || supplier.phone || "", supplier.email || "", supplier.rating || null,
+        supplier.balanceDue ? Number(supplier.balanceDue) : (supplier.pendingDues ? Number(supplier.pendingDues) : 0)
       ]);
     } else {
       const idx = db.suppliers.findIndex((s: any) => s.id === supplier.id);
@@ -3405,7 +3618,7 @@ app.post("/api/quotations", async (req: Request, res: Response) => {
   try {
     const quotation = req.body;
     quotation.id = quotation.id || `QT-${Math.floor(10000 + Math.random() * 90000)}`;
-    const settings = await DB_Service.getSettings();
+    const settings = await DB_Service.getSettings() as any;
     const prefix = settings?.quotationPrefix || "SIH-QT-";
     const quotations = await DB_Service.getQuotations();
     const count = quotations.length;
@@ -4082,7 +4295,8 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
       rawText = result.value || "";
     } else if (ext === ".pdf") {
       try {
-        const pdfParse = (await import("pdf-parse")).default;
+        const pdfParseModule = await import("pdf-parse");
+        const pdfParse = (pdfParseModule as any).default || pdfParseModule;
         const dataBuffer = fs.readFileSync(filePath);
         const pdfData = await pdfParse(dataBuffer);
         rawText = pdfData.text || "";
@@ -4240,12 +4454,39 @@ app.post("/api/parse-itinerary-file", upload.single("file"), async (req: Request
 });
 
 // File upload endpoint
-app.post("/api/upload", upload.single("file"), (req: Request, res: Response) => {
+app.post("/api/upload", upload.single("file"), async (req: Request, res: Response) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
-  const url = `/uploads/${req.file.filename}`;
-  res.json({ success: true, url, name: req.file.originalname });
+  try {
+    let url: string;
+    let storageType: string = "local";
+
+    if (supabaseClient) {
+      // Re-upload from disk to Supabase then remove local copy
+      const fileBuffer = fs.readFileSync(req.file.path);
+      const result = await uploadFileToStorage(fileBuffer, req.file.originalname, req.file.mimetype);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      url = result.url;
+      storageType = result.storageType;
+    } else {
+      url = `/uploads/${req.file.filename}`;
+    }
+    res.json({ success: true, url, name: req.file.originalname, storageType });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete("/api/upload", async (req: Request, res: Response) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: "url is required" });
+  try {
+    await deleteFileFromStorage(url);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // WhatsApp API Endpoints
@@ -4306,27 +4547,132 @@ app.post("/api/whatsapp/logs", (req: Request, res: Response) => {
 });
 
 // Backup System
-app.get("/api/backup/export", (req: Request, res: Response) => {
-  res.json(db);
+app.get("/api/backup/export", async (req: Request, res: Response) => {
+  try {
+    if (!pool) {
+      res.json({
+        _meta: {
+          backupVersion: "2.0",
+          schemaVersion: "2.0",
+          applicationVersion: "LeadLine CRM Pro 2.0",
+          createdAt: new Date().toISOString(),
+          exportedBy: "system",
+        },
+        ...db
+      });
+      return;
+    }
+
+    const [
+      users, leads, packages, quotations, bookings, vouchers, itineraries,
+      payments, expenses, hotels, drivers, suppliers, settings, logs,
+      whatsappConversations, whatsappTemplates, whatsappLogs
+    ] = await Promise.all([
+      DB_Service.getUsers(),
+      DB_Service.getLeads(),
+      DB_Service.getPackages(),
+      DB_Service.getQuotations(),
+      DB_Service.getBookings(),
+      DB_Service.getVouchers(),
+      DB_Service.getItineraries(),
+      DB_Service.getPayments(),
+      DB_Service.getExpenses(),
+      DB_Service.getHotels(),
+      DB_Service.getDrivers(),
+      DB_Service.getSuppliers(),
+      DB_Service.getSettings(),
+      DB_Service.getLogs(),
+      DB_Service.getWhatsappConversations(),
+      DB_Service.getWhatsappTemplates(),
+      DB_Service.getWhatsappLogs()
+    ]);
+
+    const messagesRes = await pool.query("SELECT * FROM whatsapp_messages ORDER BY timestamp ASC");
+    const whatsappMessages = messagesRes.rows.map((row: any) => ({
+      id: row.id,
+      conversationId: row.conversation_id,
+      sender: row.sender,
+      senderName: row.sender_name,
+      text: row.text,
+      attachmentUrl: row.attachment_url,
+      attachmentType: row.attachment_type,
+      timestamp: row.timestamp
+    }));
+
+    res.json({
+      _meta: {
+        backupVersion: "2.0",
+        schemaVersion: "2.0",
+        applicationVersion: "LeadLine CRM Pro 2.0",
+        createdAt: new Date().toISOString(),
+        leadCount: (leads as any[]).length,
+        bookingCount: (bookings as any[]).length,
+        userCount: (users as any[]).length,
+      },
+      users, leads, packages, quotations, bookings, vouchers, itineraries,
+      payments, expenses, hotels, drivers, suppliers, settings, logs,
+      whatsappConversations, whatsappMessages, whatsappTemplates, whatsappLogs
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: "Backup export failed: " + (err.message || String(err)) });
+  }
 });
 
-app.post("/api/backup/import", (req: Request, res: Response) => {
+app.post("/api/backup/import", express.json({ limit: "50mb" }), async (req: Request, res: Response) => {
   try {
     const importedData = req.body;
-    if (importedData && typeof importedData === "object" && importedData.users) {
-      db = { ...INITIAL_DB, ...importedData };
-      writeDb();
-      logAction("admin", "Restored full CRM system backup manually");
-      res.json({ success: true, message: "Backup imported and loaded successfully!" });
-    } else {
-      res.status(400).json({ success: false, message: "Invalid backup data structure" });
+    if (!(importedData && typeof importedData === "object" && importedData.users)) {
+      res.status(400).json({ success: false, message: "Invalid backup data structure — 'users' array is required. This may not be a valid LeadLine CRM backup file." });
+      return;
     }
-  } catch (err) {
-    res.status(500).json({ success: false, message: "Import parsing failed" });
+
+    // Version compatibility check
+    const meta = importedData._meta;
+    if (meta?.schemaVersion) {
+      const majorVersion = parseInt(meta.schemaVersion.split(".")[0], 10);
+      if (majorVersion > 2) {
+        res.status(400).json({
+          success: false,
+          message: `Backup schema version ${meta.schemaVersion} is newer than this application supports (v2.x). Please upgrade the application before restoring this backup.`
+        });
+        return;
+      }
+    }
+
+    // Strip _meta from the data before merging into db
+    const { _meta, ...dataToRestore } = importedData;
+    db = { ...INITIAL_DB, ...dataToRestore };
+
+    try {
+      fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf-8");
+    } catch (fileErr) {
+      console.error("Error writing db.json during restore", fileErr);
+    }
+
+    if (pool) {
+      await pool.query(
+        "INSERT INTO crm_database (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP",
+        [JSON.stringify(db)]
+      );
+      await syncRelationalDatabase(true);
+    }
+
+    const leadsRestored = Array.isArray(db.leads) ? db.leads.length : 0;
+    const bookingsRestored = Array.isArray(db.bookings) ? db.bookings.length : 0;
+    await logAction("admin", `Restored CRM backup (${leadsRestored} leads, ${bookingsRestored} bookings)`);
+    res.json({
+      success: true,
+      message: `Backup restored successfully — ${leadsRestored} leads, ${bookingsRestored} bookings, ${Array.isArray(db.users) ? db.users.length : 0} users.`,
+      restored: { leads: leadsRestored, bookings: bookingsRestored, users: Array.isArray(db.users) ? db.users.length : 0 }
+    });
+  } catch (err: any) {
+    console.error("Backup import failed:", err);
+    res.status(500).json({ success: false, message: "Import failed: " + (err.message || String(err)) });
   }
 });
 
 // ---------------- WS & WhatsApp Engine ----------------
+
 
 let wss: WebSocketServer | null = null;
 const connectedClients = new Set<WebSocket>();
@@ -4357,8 +4703,8 @@ function broadcastToClients(data: any) {
 
 // WhatsApp Real API proxy sending helper
 async function sendWhatsAppCloudMessage(to: string, messageText: string, attachmentUrl?: string) {
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || db.settings?.phoneId;
-  const token = process.env.WHATSAPP_ACCESS_TOKEN || db.settings?.accessToken;
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || (db.settings as any)?.phoneId;
+  const token = process.env.WHATSAPP_ACCESS_TOKEN || (db.settings as any)?.accessToken;
 
   if (!phoneId || !token) {
     console.log("[WhatsApp SIMULATOR] Cloud API credentials not configured. Simulating delivery.");
@@ -4637,7 +4983,7 @@ app.post("/api/whatsapp/webhook", (req: Request, res: Response) => {
             ],
             followUpHistory: []
           };
-          db.leads.unshift(newLead);
+          db.leads.unshift(newLead as any);
           logAction("system", `Created auto-captured lead: ${contactName} from WhatsApp callback`);
         }
       } else {
@@ -4697,6 +5043,9 @@ async function bootstrap() {
     console.log("Skipping boot-time PostgreSQL sync since pool is not initialized (no valid DATABASE_URL).");
   }
 
+  // Initialize Supabase Storage if configured
+  await initSupabaseStorage();
+
   const isProd = process.env.NODE_ENV === "production";
   if (!isProd) {
     try {
@@ -4715,9 +5064,24 @@ async function bootstrap() {
     }
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    
+
+    // Hashed assets (JS/CSS with content-hash filenames) — safe to cache aggressively
+    app.use("/assets", express.static(path.join(distPath, "assets"), {
+      maxAge: "1y",
+      immutable: true
+    }));
+
+    // Everything else — never cache so users always get the latest index.html on deploy
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("index.html")) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        }
+      }
+    }));
+
     app.get("*", (req: Request, res: Response) => {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(distPath, "index.html"));
     });
 

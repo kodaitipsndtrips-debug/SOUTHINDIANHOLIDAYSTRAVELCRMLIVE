@@ -1425,7 +1425,7 @@ export default function ItineraryTab({
       {/* Interactive Quick Viewer Modal */}
       {viewingItinerary && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn text-xs no-print">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-2xl space-y-4 shadow-2xl">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-2xl space-y-4 shadow-2xl max-h-[85vh] overflow-y-auto overscroll-contain">
             <div className="flex items-center justify-between pb-2 border-b border-slate-850">
               <h3 className="text-sm font-black uppercase text-white tracking-wider flex items-center gap-1.5">
                 <Lucide.Map className="w-5 h-5 text-indigo-400" />

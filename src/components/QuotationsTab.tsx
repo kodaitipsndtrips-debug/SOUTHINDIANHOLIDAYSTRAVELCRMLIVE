@@ -586,7 +586,7 @@ export default function QuotationsTab({
       };
 
       // Generate the PDF as a blob
-      const pdfBlob = await html2pdf().from(container).set(opt).output('blob');
+      const pdfBlob = await html2pdf().from(container).set(opt as any).output('blob');
       const pdfUrl = URL.createObjectURL(pdfBlob);
 
       // Create a hidden iframe for print
@@ -646,7 +646,7 @@ export default function QuotationsTab({
         jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
       };
 
-      const pdfBlob = await html2pdf().from(container).set(opt).output('blob');
+      const pdfBlob = await html2pdf().from(container).set(opt as any).output('blob');
       const formData = new FormData();
       formData.append("file", pdfBlob, `Quotation-${qNumber}.pdf`);
 
@@ -724,7 +724,7 @@ export default function QuotationsTab({
           jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
         };
 
-        await html2pdf().from(container).set(opt).save();
+        await html2pdf().from(container).set(opt as any).save();
         await uploadPDF(currentId!, currentNumber);
         alert(`Success: Quotation-${currentNumber}.pdf successfully generated and downloaded.`);
         fetchQuotations();
@@ -1123,7 +1123,7 @@ export default function QuotationsTab({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div>
                   <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Pickup Location</label>
                   <input
@@ -1160,7 +1160,7 @@ export default function QuotationsTab({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div className="col-span-1">
                   <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Adults</label>
                   <input
@@ -1314,6 +1314,7 @@ export default function QuotationsTab({
 
             {/* List of current line items */}
             <div className="border border-slate-850 rounded-xl overflow-hidden text-xs">
+              <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-950/50 text-[9px] uppercase font-black tracking-wider text-slate-400">
                   <tr>
@@ -1353,6 +1354,7 @@ export default function QuotationsTab({
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
 
             {/* T&C template pickers & totals */}
@@ -1410,7 +1412,7 @@ export default function QuotationsTab({
       {/* Email Dispatch Modal */}
       {showEmailModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 no-print">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl max-h-[85vh] overflow-y-auto overscroll-contain">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black uppercase text-slate-300 tracking-wider flex items-center gap-2">
                 <Lucide.Mail className="w-4 h-4 text-amber-500" />

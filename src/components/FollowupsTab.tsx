@@ -278,7 +278,7 @@ export default function FollowupsTab({ leads = [], onUpdateLead }: FollowupsTabP
             </div>
             <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1 custom-scrollbar">
               {overdue.map(fu => (
-                <FollowupCard key={fu.id} fu={fu} onComplete={() => handleCompletePrompt(fu.leadId, fu.id)} onReschedule={(newD) => handleReschedule(fu.leadId, fu.id, newD)} isOverdue />
+                <FollowupCard key={fu.id} fu={fu} onComplete={() => handleCompletePrompt(fu.leadId, fu.id)} onReschedule={(newD) => handleReschedule(fu.leadId, fu.id, newD)} isOverdue={true} />
               ))}
               {overdue.length === 0 && <p className="text-[10px] text-slate-500 font-mono py-8 text-center bg-slate-900/30 border border-slate-850/45 rounded-xl">No overdue followups.</p>}
             </div>
@@ -348,11 +348,12 @@ export default function FollowupsTab({ leads = [], onUpdateLead }: FollowupsTabP
 }
 
 interface CardProps {
-  fu: any;
+  fu: any;  // enriched FollowUp with leadId, leadName, leadMobile added by getFollowupsFlat
   onComplete: () => void;
   onReschedule: (newDate: string) => void;
   isOverdue?: boolean;
   badgeText?: string;
+  [key: string]: any;  // allow extra JSX props without type errors
 }
 
 function FollowupCard({ fu, onComplete, onReschedule, isOverdue = false, badgeText }: CardProps) {

@@ -50,10 +50,8 @@ export interface Hotel {
   name: string;
   destination: string;
   rating: string;
-  stars?: number;        // alias sent by DirectoryTabs form
   contactPerson: string;
   contactPhone: string;
-  phone?: string;        // alias field
   roomType: string;
   contractRate: number;
   availableRooms: number;
@@ -63,26 +61,21 @@ export interface Driver {
   id: string;
   name: string;
   mobile: string;
-  phone?: string;        // alias for mobile used in some display contexts
   vehicleType: string;
   vehicleNo: string;
   status: 'Available' | 'On Trip' | 'Maintenance';
   rating: string;
-  licenseNo?: string;
-  dailyRate?: number;
 }
 
 export interface Supplier {
   id: string;
   name: string;
   type: 'Transport' | 'Hotel' | 'Activities' | 'Other';
-  category?: string;     // alias for type used by DirectoryTabs form
   contactPerson: string;
   contactPhone: string;
   email: string;
   rating: string;
   balanceDue: number;
-  pendingDues?: number;  // alias for balanceDue used by DirectoryTabs form
 }
 
 export interface FollowUp {
@@ -109,7 +102,7 @@ export interface Lead {
   children: string;
   budget?: number;
   notes: string;
-  status: 'New' | 'Contacted' | 'Proposal Sent' | 'Negotiation' | 'Won' | 'Lost' | 'Hot' | 'Follow-up';
+  status: 'New' | 'Contacted' | 'Proposal Sent' | 'Negotiation' | 'Won' | 'Lost' | 'Hot';
   priority: 'Low' | 'Medium' | 'High';
   assignedTo?: string;
   source?: string; // e.g. Website, WhatsApp, Referral
@@ -220,29 +213,23 @@ export interface HotelVoucher {
 
 export interface ItineraryDay {
   dayNumber: number;
+  date: string;
   title: string;
-  // ItineraryTab uses activity/stay fields
-  activity?: string;
-  stay?: string;
-  // Richer fields used in some App.tsx contexts
-  date?: string;
-  description?: string;
-  hotelName?: string;
-  meals?: string[];
-  transportDetails?: string;
+  description: string;
+  hotelName: string;
+  meals: string[];
+  transportDetails: string;
   notes?: string;
 }
 
 export interface Itinerary {
   id: string;
-  bookingId?: string;
+  bookingId: string;
   customerName: string;
-  bookingNumber?: string;
+  bookingNumber: string;
   destination: string;
-  travelDate?: string;
-  duration?: string;
+  travelDate: string;
   days: ItineraryDay[];
-  createdAt?: string;
 }
 
 export interface PaymentInstallment {
@@ -310,5 +297,18 @@ export interface WhatsAppConversation {
   lastTimestamp: string;
 }
 
-// Voucher is an alias for HotelVoucher — VouchersTab imports it as 'Voucher'
-export type Voucher = HotelVoucher;
+export interface ItineraryDay {
+  dayNumber: number;
+  title: string;
+  activity: string;
+  stay: string;
+}
+
+export interface Itinerary {
+  id: string;
+  customerName: string;
+  destination: string;
+  duration: string;
+  days: ItineraryDay[];
+  createdAt: string;
+}

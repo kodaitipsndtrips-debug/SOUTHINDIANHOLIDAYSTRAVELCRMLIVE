@@ -9,8 +9,9 @@ interface DashboardTabProps {
   leads: Lead[];
   bookings: Booking[];
   payments: PaymentLedger[];
-  packages: TourPackage[];
-  logs: ActivityLog[];
+  packages?: TourPackage[];
+  expenses?: any[];
+  logs?: ActivityLog[];
   setCurrentTab?: (tab: string) => void;
   onAddLead?: (lead: Partial<Lead>) => void;
 }

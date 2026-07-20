@@ -1341,7 +1341,7 @@ export default function LeadsTab({
       {/* 11. Add Follow-up Modal Popup */}
       {showAddFollowupModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4 animate-fadeIn">
-          <div className="bg-slate-900 border border-slate-750 w-full max-w-lg rounded-2xl shadow-2xl p-6 relative overflow-hidden space-y-4">
+          <div className="bg-slate-900 border border-slate-750 w-full max-w-lg rounded-2xl shadow-2xl p-6 relative max-h-[85vh] overflow-y-auto overscroll-contain space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-xl">

@@ -389,3 +389,75 @@ aside button:hover:not(.bg-slate-800) {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* ==========================================
+   TOAST NOTIFICATION SYSTEM
+   ========================================== */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)  scale(1); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translateY(0)  scale(1);    max-height: 80px; }
+  to   { opacity: 0; transform: translateY(8px) scale(0.96); max-height: 0; padding: 0; margin: 0; }
+}
+.toast-item {
+  animation: toastIn 0.25s cubic-bezier(0.16,1,0.3,1) forwards;
+}
+.toast-item.toast-exit {
+  animation: toastOut 0.2s ease-in forwards;
+}
+
+/* ==========================================
+   SKELETON LOADER
+   ========================================== */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-secondary) 25%, #334155 50%, var(--bg-secondary) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+/* ==========================================
+   GLOBAL SPINNER
+   ========================================== */
+@keyframes spin-smooth {
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  width: 20px; height: 20px;
+  border: 2px solid rgba(99,102,241,0.2);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin-smooth 0.7s linear infinite;
+  display: inline-block;
+}
+
+/* ==========================================
+   BUTTON LOADING STATE
+   ========================================== */
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ==========================================
+   OFFLINE BANNER
+   ========================================== */
+.offline-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  background: #7f1d1d;
+  color: #fca5a5;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}

@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import * as Lucide from "lucide-react";
+
+// Hooks
+import { useToast } from "./hooks/useToast";
+import { useOnlineStatus } from "./hooks/useOnlineStatus";
 
 // Components
 import Sidebar from "./components/Sidebar";
@@ -26,6 +30,8 @@ import { User, Lead, TourPackage, Booking, HotelVoucher, PaymentLedger, Expense,
 import { getLocalDateString } from "./utils";
 
 export default function App() {
+  const toast = useToast();
+  const isOnline = useOnlineStatus();
   const [user, setUser] = useState<User | null>(null);
   const [realAdminUser, setRealAdminUser] = useState<User | null>(null);
   const [currentTab, setCurrentTab] = useState("dashboard");
@@ -175,6 +181,7 @@ export default function App() {
         const loggedUser = res.data.user;
         setUser(loggedUser);
         localStorage.setItem("sih_crm_user", JSON.stringify(loggedUser));
+        toast.success(`Welcome back, ${loggedUser.fullName || loggedUser.username}!`);
       } else {
         setLoginError(res.data.message || "Invalid credential parameters.");
       }
@@ -193,6 +200,7 @@ export default function App() {
         };
         setUser(backupAdmin);
         localStorage.setItem("sih_crm_user", JSON.stringify(backupAdmin));
+        toast.warn("Logged in with offline fallback account — server unreachable.");
       } else if (loginUsername === "sales" && loginPassword === "sales") {
         const backupSales: User = {
           id: "USR-MOCK-002",
@@ -206,6 +214,7 @@ export default function App() {
         };
         setUser(backupSales);
         localStorage.setItem("sih_crm_user", JSON.stringify(backupSales));
+        toast.warn("Logged in with offline fallback account — server unreachable.");
       } else {
         setLoginError("Credentials invalid or backend network unavailable. Try 'admin / admin' or 'sales / sales'.");
       }
@@ -217,6 +226,9 @@ export default function App() {
     setRealAdminUser(null);
     localStorage.removeItem("sih_crm_user");
     setCurrentTab("dashboard");
+    setLoginUsername("");
+    setLoginPassword("");
+    setLoginError("");
   };
 
   const handleImpersonateUser = (targetUser: User | null) => {
@@ -235,7 +247,7 @@ export default function App() {
 
   // Mutator Sync Handlers
   // LEADS
-  const handleAddLead = async (leadData: Partial<Lead>) => {
+  const handleAddLead = useCallback(async (leadData: Partial<Lead>) => {
     try {
       const res = await axios.post("/api/leads", leadData);
       setLeads(prev => [res.data, ...prev]);
@@ -258,26 +270,29 @@ export default function App() {
         followUpHistory: []
       };
       setLeads(prev => [localNew, ...prev]);
+      toast.warn("Server unreachable — lead saved locally only.");
     }
-  };
+  }, [toast]);
 
-  const handleUpdateLead = async (id: string, leadData: Partial<Lead>) => {
+  const handleUpdateLead = useCallback(async (id: string, leadData: Partial<Lead>) => {
     try {
       const res = await axios.put(`/api/leads/${id}`, leadData);
       setLeads(prev => prev.map(l => l.id === id ? res.data : l));
     } catch {
       setLeads(prev => prev.map(l => l.id === id ? { ...l, ...leadData } as Lead : l));
+      toast.warn("Server unreachable — lead update saved locally only.");
     }
-  };
+  }, [toast]);
 
-  const handleDeleteLead = async (id: string) => {
+  const handleDeleteLead = useCallback(async (id: string) => {
     try {
       await axios.delete(`/api/leads/${id}`);
       setLeads(prev => prev.filter(l => l.id !== id));
     } catch {
       setLeads(prev => prev.filter(l => l.id !== id));
+      toast.warn("Server unreachable — lead deletion applied locally only.");
     }
-  };
+  }, [toast]);
 
   // PACKAGES
   const handleAddPackage = async (pkg: Partial<TourPackage>) => {
@@ -633,26 +648,28 @@ export default function App() {
   };
 
   // Timeline Notification Alerts Counts
-  const safeLeads = Array.isArray(leads) ? leads : [];
-  const safeBookings = Array.isArray(bookings) ? bookings : [];
+  const safeLeads = useMemo(() => Array.isArray(leads) ? leads : [], [leads]);
+  const safeBookings = useMemo(() => Array.isArray(bookings) ? bookings : [], [bookings]);
 
-  const overdueCount = safeLeads.reduce((acc, l) => {
+  const overdueCount = useMemo(() => safeLeads.reduce((acc, l) => {
     const isOverdue = Array.isArray(l.followUpHistory) && l.followUpHistory.some(f => f.status === "Pending" && new Date(f.date) < new Date());
     return isOverdue ? acc + 1 : acc;
-  }, 0);
+  }, 0), [safeLeads]);
 
-  const todayFollowUpCount = safeLeads.reduce((acc, l) => {
+  const todayFollowUpCount = useMemo(() => {
     const today = getLocalDateString();
-    const hasToday = Array.isArray(l.followUpHistory) && l.followUpHistory.some(f => f.status === "Pending" && f.date === today);
-    return hasToday ? acc + 1 : acc;
-  }, 0);
+    return safeLeads.reduce((acc, l) => {
+      const hasToday = Array.isArray(l.followUpHistory) && l.followUpHistory.some(f => f.status === "Pending" && f.date === today);
+      return hasToday ? acc + 1 : acc;
+    }, 0);
+  }, [safeLeads]);
 
   // Tours beginning in the next 7 days count
-  const upcomingToursCount = safeBookings.reduce((acc, b) => {
+  const upcomingToursCount = useMemo(() => safeBookings.reduce((acc, b) => {
     const diff = new Date(b.travelDate).getTime() - new Date().getTime();
     const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
     return days >= 0 && days <= 7 && b.status === "Confirmed" ? acc + 1 : acc;
-  }, 0);
+  }, 0), [safeBookings]);
 
   // If user session is empty, render the Login Panel
   if (!user) {
@@ -702,6 +719,8 @@ export default function App() {
                 <input
                   type="text"
                   required
+                  autoComplete="username"
+                  aria-label="Backoffice Username"
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
                   placeholder="Username (e.g. admin)"
@@ -719,6 +738,8 @@ export default function App() {
                 <input
                   type="password"
                   required
+                  autoComplete="current-password"
+                  aria-label="Secure Password"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   placeholder="Password (e.g. admin)"
@@ -948,6 +969,12 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-950 overflow-hidden text-slate-100">
+      {/* Offline banner */}
+      {!isOnline && (
+        <div className="offline-banner">
+          ⚠ You are offline — changes will sync when connection is restored
+        </div>
+      )}
       {/* Sidebar - Navigation */}
       <Sidebar
         currentTab={currentTab}
